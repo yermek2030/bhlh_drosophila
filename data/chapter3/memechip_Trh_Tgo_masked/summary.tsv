@@ -1,0 +1,8 @@
+MOTIF_INDEX	MOTIF_SOURCE	MOTIF_ID	ALT_ID	CONSENSUS	WIDTH	SITES	E-VALUE	E-VALUE_SOURCE	MOST_SIMILAR_MOTIF_SOURCE	MOST_SIMILAR_MOTIF	URL
+1	MEME	AWWWWWWWWWWWAAHAWATWWAAAAWWWW	MEME-1	AWWWWWWWWWWWAAHAWATWWAAAAWWWW	29	268	4.0e-114	MEME	 	 	 
+2	MEME	GTRCACTGARARAAA	MEME-2	GTRCACTGARARAAA	15	39	1.1e-023	MEME	 	 	 
+3	STREME	1-GCCAAA	STREME-1	GCCAAA	6	210	4.1e-002	STREME	reference/motif_databases/combined_drosophila.meme	FBgn0037207 (Mes2_SANGER_5)	http://pgfe.umassmed.edu/TFDBS/TFdetails.php?FlybaseID=FBgn0037207
+
+# MEME-ChIP (Motif Analysis of Large Nucleotide Datasets): Version 5.5.5 released on Thu Sep 14 08:48:04 2023 +1000
+# The format of this file is described at https://meme-suite.org/meme//doc/meme-chip-output-format.html
+# meme-chip -oc data/chapter3/memechip_Trh_Tgo_masked -db reference/motif_databases/combined_drosophila.meme -order 0 -meme-nmotifs 10 -minw 6 -maxw 30 -seed 777 data/chapter3/Trh_Tgo_joint_peaks_filt_repeatmasked.fa

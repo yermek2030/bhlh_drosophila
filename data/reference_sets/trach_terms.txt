@@ -1,0 +1,17 @@
+adult tracheal precursor specific anlage
+anterior spiracle specific anlage
+dorsal trunk specific anlage
+embryonic tracheole
+embryonic/larval anterior spiracle
+embryonic/larval dorsal branch
+embryonic/larval dorsal trunk
+embryonic/larval posterior spiracle
+embryonic/larval tracheal system
+embryonic/larval visceral branch
+imaginal tracheal precursor
+posterior spiracle specific anlage
+primary segmental branch specific anlage
+tracheal primordium
+tracheal system anlage
+tracheole specific anlage
+visceral branch specific anlage

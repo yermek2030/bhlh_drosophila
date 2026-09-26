@@ -1,0 +1,14 @@
+quantity	value
+peaks	614
+Motif2+ peaks	178
+distal OR Motif2 x promoter	0.302
+distal % Motif2+	40.4
+distal % Motif2-	17
+Motif2 instances	269
+Grh instances	2
+Motif2 instances overlapping Grh	0
+pct overlapping	0
+peak-level OR Motif2 x Grh	Inf
+peak-level p	0.2899
+distal-only OR	Inf
+distal-only p	0.4932

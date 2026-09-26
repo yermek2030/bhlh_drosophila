@@ -1,0 +1,9 @@
+"Set","Class","N_peaks","pct_TSGonly","pct_CNSonly","OR_TSG_over_CNS","CI_lo","CI_hi","p"
+"Trh/Tgo","bHLH-PAS/Tgo",614,5.45,8.61,0.613,0.392,0.982,0.0319
+"Sim/Tgo","bHLH-PAS/Tgo",355,2.64,5.93,0.43,0.245,0.779,0.0034
+"Dys/Tgo","bHLH-PAS/Tgo",870,6.74,8.01,0.83,0.531,1.337,0.412
+"Sima/Tgo","bHLH-PAS/Tgo",296,2.75,3.86,0.706,0.371,1.44,0.288
+"Twi","non-bHLH-PAS control",4111,25.21,28.78,0.834,0.639,1.094,0.173
+"Vvl","non-bHLH-PAS control",854,6.45,6.82,0.941,0.585,1.571,0.809
+"Rib","non-bHLH-PAS control",477,3.99,3.56,1.124,0.595,2.309,0.878
+"Da","non-bHLH-PAS control",923,9.2,11.28,0.798,0.543,1.194,0.264

@@ -1,0 +1,978 @@
+---
+title: "Alignment and quality control: Tgo ChIP-seq"
+author: "Yermek Aiten"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# BAM FILES MANAGEMENT
+```{bash}
+#!/usr/bin/env bash
+# ============================================================
+# TGO ChIP-seq Pipeline, Drosophila melanogaster (dm6)
+# Transcription factor: Tango (Tgo), bHLH-PAS obligate partner
+# Replicates: PAIRED-END throughout (3 biological replicates + 1 matched input control)
+# ============================================================
+
+set -euo pipefail
+
+# ============================================================
+# Directories: 01_fastqc/tgo raw FASTQ, 03_bam BAM, 04_qc dup metrics, 07_blacklist filtered BAMs, 09_peaks MACS3 peaks, 10_idr IDR outputs, 11_final peak set, 12_pseudoreps unused
+# ============================================================
+
+mkdir -p 03_bam 04_qc 07_blacklist 09_peaks 10_idr 11_final
+mkdir -p $PROJECT_DIR/tmp
+
+
+# ============================================================
+# Stage 1: alignment (SAM -> BAM -> sort). Bowtie2 PE alignment done upstream, SAM files in 03_bam/.
+# ENCODE ENCSR306TVS, six FASTQs, three pairs (rep1-3) per portal pairing info.
+# ============================================================
+#
+# bowtie2 -x dm6 \
+#   -1 01_fastqc/tgo/TGO_REP1_R1.fastq.gz \
+#   -2 01_fastqc/tgo/TGO_REP1_R2.fastq.gz \
+#   -S 03_bam/TGO_rep1.sam -p 8
+#
+# bowtie2 -x dm6 \
+#   -1 01_fastqc/tgo/TGO_REP2_R1.fastq.gz \
+#   -2 01_fastqc/tgo/TGO_REP2_R2.fastq.gz \
+#   -S 03_bam/TGO_rep2.sam -p 8
+#
+# bowtie2 -x dm6 \
+#   -1 01_fastqc/tgo/TGO_REP3_R1.fastq.gz \
+#   -2 01_fastqc/tgo/TGO_REP3_R2.fastq.gz \
+#   -S 03_bam/TGO_rep3.sam -p 8
+
+for REP in 1 2 3
+do
+  samtools view -bS 03_bam/TGO_rep${REP}.sam \
+    | samtools sort -o 03_bam/TGO_rep${REP}.bam
+done
+
+# Remove SAM files to recover disk space
+rm 03_bam/TGO_rep*.sam
+
+
+# ============================================================
+# STAGE 2, ADD READ GROUPS
+# ============================================================
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/TGO_rep1.bam \
+  O=03_bam/TGO_rep1.RG.bam \
+  RGID=TGO_rep1 RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=TGO_rep1
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/TGO_rep2.bam \
+  O=03_bam/TGO_rep2.RG.bam \
+  RGID=TGO_rep2 RGLB=lib1 RGPL=ILLUMINA RGPU=unit2 RGSM=TGO_rep2
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/TGO_rep3.bam \
+  O=03_bam/TGO_rep3.RG.bam \
+  RGID=TGO_rep3 RGLB=lib1 RGPL=ILLUMINA RGPU=unit3 RGSM=TGO_rep3
+
+
+# ============================================================
+# STAGE 3, SORT AFTER READ GROUPS
+# ============================================================
+
+for REP in 1 2 3
+do
+  samtools sort -@ 8 \
+    -o 03_bam/TGO_rep${REP}.RG.sorted.bam \
+    03_bam/TGO_rep${REP}.RG.bam
+done
+
+
+# ============================================================
+# STAGE 4, MARK AND REMOVE DUPLICATES
+# ============================================================
+
+for REP in 1 2 3
+do
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+  MarkDuplicates \
+    I=03_bam/TGO_rep${REP}.RG.sorted.bam \
+    O=03_bam/TGO_rep${REP}.rmdup.bam \
+    M=04_qc/TGO_rep${REP}.dup_metrics.txt \
+    REMOVE_DUPLICATES=true \
+    ASSUME_SORTED=true
+done
+#TMP_DIR=$PROJECT_DIR/tmp
+
+
+
+# ============================================================
+# STAGE 5, FILTER BAM
+# -q 30  : MAPQ >= 30
+# -f 2   : properly paired reads only
+# -F 1804: exclude unmapped, mate unmapped, not primary, supplementary, duplicate
+# ============================================================
+
+for REP in 1 2 3
+do
+  samtools view -b \
+    -q 30 \
+    -f 2 \
+    -F 1804 \
+    03_bam/TGO_rep${REP}.rmdup.bam \
+    > 03_bam/TGO_rep${REP}.filtered.bam
+
+  samtools index 03_bam/TGO_rep${REP}.filtered.bam
+done
+
+
+# ============================================================
+# STAGE 6, BLACKLIST REMOVAL (all replicates use filtered.bam)
+# ============================================================
+
+for REP in 1 2 3
+do
+  bedtools intersect -v \
+    -a 03_bam/TGO_rep${REP}.filtered.bam \
+    -b dm6-blacklist.v2.bed \
+    > 07_blacklist/TGO_rep${REP}.clean.bam
+
+  samtools index 07_blacklist/TGO_rep${REP}.clean.bam
+done
+
+
+# ============================================================
+# STAGE 7, CONTROL PROCESSING (paired-end)
+# ENCODE experiment: ENCSR400MGD (Input for ENCSR306TVS; PE 101 nt)
+# Two FASTQ files: ENCFF098LKV (R1), ENCFF305YAC (R2)
+# ============================================================
+
+bowtie2 -x dm6 \
+  -1 01_fastqc/tgo/ENCFF098LKV.fastq.gz \
+  -2 01_fastqc/tgo/ENCFF305YAC.fastq.gz \
+  -S 03_bam/TGO_control.sam -p 8
+
+samtools view -bS 03_bam/TGO_control.sam | samtools sort -o 03_bam/TGO_control.sorted.bam
+
+rm 03_bam/TGO_control.sam
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/TGO_control.sorted.bam \
+  O=03_bam/TGO_control.RG.bam \
+  RGID=TGO_ctrl RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=TGO_ctrl
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+MarkDuplicates \
+  I=03_bam/TGO_control.RG.bam \
+  O=03_bam/TGO_control.rmdup.bam \
+  M=04_qc/TGO_control.dup_metrics.txt \
+  REMOVE_DUPLICATES=true \
+  ASSUME_SORTED=true
+
+samtools view -b -q 30 -f 2 -F 1804 \
+  03_bam/TGO_control.rmdup.bam \
+  > 03_bam/TGO_control.filtered.bam
+
+bedtools intersect -v \
+  -a 03_bam/TGO_control.filtered.bam \
+  -b dm6-blacklist.v2.bed \
+  > 07_blacklist/TGO_control.clean.bam
+
+samtools index 07_blacklist/TGO_control.clean.bam
+
+
+# ============================================================
+# STAGE 8, MERGE REPLICATES INTO POOLED BAM (for signal assignment later)
+# ============================================================
+
+samtools merge -f 07_blacklist/TGO_merged.clean.bam \
+  07_blacklist/TGO_rep1.clean.bam \
+  07_blacklist/TGO_rep2.clean.bam \
+  07_blacklist/TGO_rep3.clean.bam
+
+samtools index 07_blacklist/TGO_merged.clean.bam
+
+
+# ============================================================
+# STAGE 9, PER-REPLICATE PEAK CALLING WITH MACS3
+# -p 1e-3 used instead of -q 0.01 to generate larger candidate set for IDR
+# Local lambda retained (matched input control present)
+# ============================================================
+# Step 1: flagstat to confirm depth
+samtools flagstat 07_blacklist/TGO_rep1.clean.bam
+samtools flagstat 07_blacklist/TGO_rep2.clean.bam
+samtools flagstat 07_blacklist/TGO_rep3.clean.bam
+samtools flagstat 07_blacklist/TGO_control.clean.bam
+
+# Step 2: fragment size QC (paired-end)
+mkdir -p 04_qc/insert_sizes
+
+bamPEFragmentSize \
+  -b 07_blacklist/TGO_rep1.clean.bam \
+     07_blacklist/TGO_rep2.clean.bam \
+     07_blacklist/TGO_rep3.clean.bam \
+     07_blacklist/TGO_control.clean.bam \
+  --samplesLabel "TGO_rep1" "TGO_rep2" "TGO_rep3" "TGO_control" \
+  --histogram 04_qc/insert_sizes/TGO_insert_size_histogram.png \
+  --outRawFragmentL lengths 04_qc/insert_sizes/TGO_insert_sizes.tab \
+  -p 8
+
+# Step 3: fingerprint
+mkdir -p 04_qc/fingerprint
+
+plotFingerprint \
+  -b 07_blacklist/TGO_rep1.clean.bam \
+     07_blacklist/TGO_rep2.clean.bam \
+     07_blacklist/TGO_rep3.clean.bam \
+     07_blacklist/TGO_control.clean.bam \
+  --plotFile 04_qc/fingerprint/TGO_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/TGO_fingerprint.tab \
+  --numberOfSamples 500000 \
+  -p 8
+
+# Step 4: replicate correlation
+multiBamSummary bins \
+  -b 07_blacklist/TGO_rep1.clean.bam \
+     07_blacklist/TGO_rep2.clean.bam \
+     07_blacklist/TGO_rep3.clean.bam \
+  --labels TGO_rep1 TGO_rep2 TGO_rep3 \
+  -o 08_qc/TGO.npz \
+  -p 8
+
+plotCorrelation \
+  -in 08_qc/TGO.npz \
+  --corMethod spearman \
+  --skipZeros \
+  --colorMap RdYlBu \
+  --whatToPlot heatmap \
+  --plotFile 08_qc/TGO_spearman_heatmap.pdf \
+  --outFileCorMatrix 08_qc/TGO_spearman_matrix.txt
+
+plotCorrelation \
+-in 08_qc/TGO.npz \
+--corMethod spearman \
+--whatToPlot scatterplot \
+--plotFile 08_qc/TGO_spearman_scatter.pdf
+```
+
+
+
+```{bash}
+#!/usr/bin/env bash
+# ============================================================
+# TGO MACS3 threshold comparison, thresholds 1e-3/1e-2/1e-1
+# Paired-end, 3 replicates + 1 input; pairwise IDR rep1v2/1v3/2v3, consensus in >=2/3 pairs
+# Output: one summary row per threshold
+
+set -euo pipefail
+mkdir -p 05_peaks_thresh/TGO
+mkdir -p 10_idr_thresh/TGO
+
+echo "THRESH | MACS_r1 | MACS_r2 | MACS_r3 | IDR_1v2 | IDR_1v3 | IDR_2v3 | CONSENSUS | MU_1v2 | MU_1v3 | MU_2v3 | PCT_1v2 | PCT_1v3 | PCT_2v3 | FRIP_r1 | FRIP_r2 | FRIP_r3"
+conda activate phd
+# ============================================================
+# THRESHOLD 1e-3
+# ============================================================
+
+# --- MACS3 ---
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep1.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep1_p1e3 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-3 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep1_p1e3.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep2.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep2_p1e3 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-3 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep2_p1e3.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep3.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep3_p1e3 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-3 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep3_p1e3.log
+
+M1_1e3=$(wc -l < 05_peaks_thresh/TGO/TGO_rep1_p1e3_peaks.narrowPeak)
+M2_1e3=$(wc -l < 05_peaks_thresh/TGO/TGO_rep2_p1e3_peaks.narrowPeak)
+M3_1e3=$(wc -l < 05_peaks_thresh/TGO/TGO_rep3_p1e3_peaks.narrowPeak)
+
+# --- Sort ---
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep1_p1e3_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep1_p1e3.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep2_p1e3_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep2_p1e3.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep3_p1e3_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep3_p1e3.sorted.narrowPeak
+conda activate idr
+# --- IDR rep1 vs rep2 ---
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p1e3.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep2_p1e3.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v2_p1e3.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v2_p1e3.log
+
+# --- IDR rep1 vs rep3 ---
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p1e3.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p1e3.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v3_p1e3.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v3_p1e3.log
+
+# --- IDR rep2 vs rep3 ---
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep2_p1e3.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p1e3.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_2v3_p1e3.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_2v3_p1e3.log
+conda deactivate
+# --- Extract metrics ---
+NCOLS_1e3=$(awk '{print NF; exit}' 10_idr_thresh/TGO/TGO_1v2_p1e3.txt)
+if [ "$NCOLS_1e3" -ge 12 ]; then
+  IDR_12_1e3=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v2_p1e3.txt | wc -l)
+  IDR_13_1e3=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v3_p1e3.txt | wc -l)
+  IDR_23_1e3=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_2v3_p1e3.txt | wc -l)
+else
+  IDR_12_1e3=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v2_p1e3.txt | wc -l)
+  IDR_13_1e3=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v3_p1e3.txt | wc -l)
+  IDR_23_1e3=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_2v3_p1e3.txt | wc -l)
+fi
+
+MU_12_1e3=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v2_p1e3.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+MU_13_1e3=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v3_p1e3.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+MU_23_1e3=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_2v3_p1e3.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+
+PCT_12_1e3=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v2_p1e3.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+PCT_13_1e3=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v3_p1e3.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+PCT_23_1e3=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_2v3_p1e3.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+
+# --- Consensus >=2/3 ---
+if [ "$NCOLS_1e3" -ge 12 ]; then
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p1e3.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p1e3.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p1e3.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p1e3.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p1e3.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p1e3.merged.bed
+else
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p1e3.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p1e3.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p1e3.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p1e3.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p1e3.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p1e3.merged.bed
+fi
+
+CONSENSUS_1e3=$(cat \
+  /tmp/TGO_1v2_p1e3.merged.bed \
+  /tmp/TGO_1v3_p1e3.merged.bed \
+  /tmp/TGO_2v3_p1e3.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2' | wc -l)
+
+# Keep consensus BED for FRiP
+cat \
+  /tmp/TGO_1v2_p1e3.merged.bed \
+  /tmp/TGO_1v3_p1e3.merged.bed \
+  /tmp/TGO_2v3_p1e3.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2 {print $1"\t"$2"\t"$3}' \
+  > /tmp/TGO_consensus_p1e3.bed
+rm /tmp/TGO_1v2_p1e3.merged.bed /tmp/TGO_1v3_p1e3.merged.bed /tmp/TGO_2v3_p1e3.merged.bed
+
+# --- FRiP ---
+bedtools bamtobed -i 07_blacklist/TGO_rep1.clean.bam > /tmp/TGO_r1_p1e3.bed
+TOTAL_R1=$(wc -l < /tmp/TGO_r1_p1e3.bed)
+IN_R1=$(bedtools intersect -u -a /tmp/TGO_r1_p1e3.bed \
+  -b /tmp/TGO_consensus_p1e3.bed | wc -l)
+FRIP_R1_1e3=$(awk -v a="$IN_R1" -v b="$TOTAL_R1" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r1_p1e3.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep2.clean.bam > /tmp/TGO_r2_p1e3.bed
+TOTAL_R2=$(wc -l < /tmp/TGO_r2_p1e3.bed)
+IN_R2=$(bedtools intersect -u -a /tmp/TGO_r2_p1e3.bed \
+  -b /tmp/TGO_consensus_p1e3.bed | wc -l)
+FRIP_R2_1e3=$(awk -v a="$IN_R2" -v b="$TOTAL_R2" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r2_p1e3.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep3.clean.bam > /tmp/TGO_r3_p1e3.bed
+TOTAL_R3=$(wc -l < /tmp/TGO_r3_p1e3.bed)
+IN_R3=$(bedtools intersect -u -a /tmp/TGO_r3_p1e3.bed \
+  -b /tmp/TGO_consensus_p1e3.bed | wc -l)
+FRIP_R3_1e3=$(awk -v a="$IN_R3" -v b="$TOTAL_R3" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r3_p1e3.bed /tmp/TGO_consensus_p1e3.bed
+
+echo "1e-3 | $M1_1e3 | $M2_1e3 | $M3_1e3 | $IDR_12_1e3 | $IDR_13_1e3 | $IDR_23_1e3 | $CONSENSUS_1e3 | $MU_12_1e3 | $MU_13_1e3 | $MU_23_1e3 | ${PCT_12_1e3}% | ${PCT_13_1e3}% | ${PCT_23_1e3}% | $FRIP_R1_1e3 | $FRIP_R2_1e3 | $FRIP_R3_1e3"
+
+# ============================================================
+# THRESHOLD 1e-2
+# ============================================================
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep1.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep1_p1e2 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-2 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep1_p1e2.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep2.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep2_p1e2 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-2 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep2_p1e2.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep3.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep3_p1e2 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-2 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep3_p1e2.log
+
+M1_1e2=$(wc -l < 05_peaks_thresh/TGO/TGO_rep1_p1e2_peaks.narrowPeak)
+M2_1e2=$(wc -l < 05_peaks_thresh/TGO/TGO_rep2_p1e2_peaks.narrowPeak)
+M3_1e2=$(wc -l < 05_peaks_thresh/TGO/TGO_rep3_p1e2_peaks.narrowPeak)
+
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep1_p1e2_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep1_p1e2.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep2_p1e2_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep2_p1e2.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep3_p1e2_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep3_p1e2.sorted.narrowPeak
+conda activate idr
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p1e2.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep2_p1e2.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v2_p1e2.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v2_p1e2.log
+
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p1e2.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p1e2.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v3_p1e2.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v3_p1e2.log
+
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep2_p1e2.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p1e2.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_2v3_p1e2.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_2v3_p1e2.log
+conda deactivate 
+NCOLS_1e2=$(awk '{print NF; exit}' 10_idr_thresh/TGO/TGO_1v2_p1e2.txt)
+if [ "$NCOLS_1e2" -ge 12 ]; then
+  IDR_12_1e2=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v2_p1e2.txt | wc -l)
+  IDR_13_1e2=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v3_p1e2.txt | wc -l)
+  IDR_23_1e2=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_2v3_p1e2.txt | wc -l)
+else
+  IDR_12_1e2=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v2_p1e2.txt | wc -l)
+  IDR_13_1e2=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v3_p1e2.txt | wc -l)
+  IDR_23_1e2=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_2v3_p1e2.txt | wc -l)
+fi
+
+MU_12_1e2=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v2_p1e2.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+MU_13_1e2=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v3_p1e2.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+MU_23_1e2=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_2v3_p1e2.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+
+PCT_12_1e2=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v2_p1e2.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+PCT_13_1e2=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v3_p1e2.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+PCT_23_1e2=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_2v3_p1e2.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+
+if [ "$NCOLS_1e2" -ge 12 ]; then
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p1e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p1e2.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p1e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p1e2.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p1e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p1e2.merged.bed
+else
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p1e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p1e2.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p1e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p1e2.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p1e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p1e2.merged.bed
+fi
+
+CONSENSUS_1e2=$(cat \
+  /tmp/TGO_1v2_p1e2.merged.bed \
+  /tmp/TGO_1v3_p1e2.merged.bed \
+  /tmp/TGO_2v3_p1e2.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2' | wc -l)
+
+cat \
+  /tmp/TGO_1v2_p1e2.merged.bed \
+  /tmp/TGO_1v3_p1e2.merged.bed \
+  /tmp/TGO_2v3_p1e2.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2 {print $1"\t"$2"\t"$3}' \
+  > /tmp/TGO_consensus_p1e2.bed
+rm /tmp/TGO_1v2_p1e2.merged.bed /tmp/TGO_1v3_p1e2.merged.bed /tmp/TGO_2v3_p1e2.merged.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep1.clean.bam > /tmp/TGO_r1_p1e2.bed
+TOTAL_R1=$(wc -l < /tmp/TGO_r1_p1e2.bed)
+IN_R1=$(bedtools intersect -u -a /tmp/TGO_r1_p1e2.bed \
+  -b /tmp/TGO_consensus_p1e2.bed | wc -l)
+FRIP_R1_1e2=$(awk -v a="$IN_R1" -v b="$TOTAL_R1" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r1_p1e2.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep2.clean.bam > /tmp/TGO_r2_p1e2.bed
+TOTAL_R2=$(wc -l < /tmp/TGO_r2_p1e2.bed)
+IN_R2=$(bedtools intersect -u -a /tmp/TGO_r2_p1e2.bed \
+  -b /tmp/TGO_consensus_p1e2.bed | wc -l)
+FRIP_R2_1e2=$(awk -v a="$IN_R2" -v b="$TOTAL_R2" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r2_p1e2.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep3.clean.bam > /tmp/TGO_r3_p1e2.bed
+TOTAL_R3=$(wc -l < /tmp/TGO_r3_p1e2.bed)
+IN_R3=$(bedtools intersect -u -a /tmp/TGO_r3_p1e2.bed \
+  -b /tmp/TGO_consensus_p1e2.bed | wc -l)
+FRIP_R3_1e2=$(awk -v a="$IN_R3" -v b="$TOTAL_R3" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r3_p1e2.bed /tmp/TGO_consensus_p1e2.bed
+
+echo "1e-2 | $M1_1e2 | $M2_1e2 | $M3_1e2 | $IDR_12_1e2 | $IDR_13_1e2 | $IDR_23_1e2 | $CONSENSUS_1e2 | $MU_12_1e2 | $MU_13_1e2 | $MU_23_1e2 | ${PCT_12_1e2}% | ${PCT_13_1e2}% | ${PCT_23_1e2}% | $FRIP_R1_1e2 | $FRIP_R2_1e2 | $FRIP_R3_1e2"
+
+# ============================================================
+# THRESHOLD 0.05
+# ============================================================
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep1.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep1_p5e2 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 0.05 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep1_p5e2.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep2.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep2_p5e2 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 0.05 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep2_p5e2.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep3.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep3_p5e2 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 0.05 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep3_p5e2.log
+
+TGO_M1=$(wc -l < 05_peaks_thresh/TGO/TGO_rep1_p5e2_peaks.narrowPeak)
+TGO_M2=$(wc -l < 05_peaks_thresh/TGO/TGO_rep2_p5e2_peaks.narrowPeak)
+TGO_M3=$(wc -l < 05_peaks_thresh/TGO/TGO_rep3_p5e2_peaks.narrowPeak)
+
+# --- Sort ---
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep1_p5e2_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep1_p5e2.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep2_p5e2_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep2_p5e2.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep3_p5e2_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep3_p5e2.sorted.narrowPeak
+conda activate idr
+# --- IDR ---
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p5e2.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep2_p5e2.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v2_p5e2.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v2_p5e2.log
+
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p5e2.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p5e2.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v3_p5e2.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v3_p5e2.log
+
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep2_p5e2.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p5e2.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_2v3_p5e2.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_2v3_p5e2.log
+conda deactivate
+# --- Metrics ---
+NCOLS=$(awk '{print NF; exit}' 10_idr_thresh/TGO/TGO_1v2_p5e2.txt)
+if [ "$NCOLS" -ge 12 ]; then
+  TGO_12=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v2_p5e2.txt | wc -l)
+  TGO_13=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v3_p5e2.txt | wc -l)
+  TGO_23=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_2v3_p5e2.txt | wc -l)
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p5e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p5e2.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p5e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p5e2.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p5e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p5e2.merged.bed
+else
+  TGO_12=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v2_p5e2.txt | wc -l)
+  TGO_13=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v3_p5e2.txt | wc -l)
+  TGO_23=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_2v3_p5e2.txt | wc -l)
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p5e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p5e2.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p5e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p5e2.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p5e2.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p5e2.merged.bed
+fi
+
+TGO_MU_12=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v2_p5e2.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+TGO_MU_13=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v3_p5e2.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+TGO_MU_23=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_2v3_p5e2.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+
+TGO_PCT_12=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v2_p5e2.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+TGO_PCT_13=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v3_p5e2.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+TGO_PCT_23=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_2v3_p5e2.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+
+TGO_CONS=$(cat \
+  /tmp/TGO_1v2_p5e2.merged.bed \
+  /tmp/TGO_1v3_p5e2.merged.bed \
+  /tmp/TGO_2v3_p5e2.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2' | wc -l)
+
+cat \
+  /tmp/TGO_1v2_p5e2.merged.bed \
+  /tmp/TGO_1v3_p5e2.merged.bed \
+  /tmp/TGO_2v3_p5e2.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2 {print $1"\t"$2"\t"$3}' \
+  > /tmp/TGO_consensus_p5e2.bed
+rm /tmp/TGO_1v2_p5e2.merged.bed \
+   /tmp/TGO_1v3_p5e2.merged.bed \
+   /tmp/TGO_2v3_p5e2.merged.bed
+
+# --- FRiP ---
+bedtools bamtobed -i 07_blacklist/TGO_rep1.clean.bam > /tmp/TGO_r1.bed
+TOTAL=$(wc -l < /tmp/TGO_r1.bed)
+IN=$(bedtools intersect -u -a /tmp/TGO_r1.bed \
+  -b /tmp/TGO_consensus_p5e2.bed | wc -l)
+TGO_FRIP1=$(awk -v a="$IN" -v b="$TOTAL" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r1.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep2.clean.bam > /tmp/TGO_r2.bed
+TOTAL=$(wc -l < /tmp/TGO_r2.bed)
+IN=$(bedtools intersect -u -a /tmp/TGO_r2.bed \
+  -b /tmp/TGO_consensus_p5e2.bed | wc -l)
+TGO_FRIP2=$(awk -v a="$IN" -v b="$TOTAL" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r2.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep3.clean.bam > /tmp/TGO_r3.bed
+TOTAL=$(wc -l < /tmp/TGO_r3.bed)
+IN=$(bedtools intersect -u -a /tmp/TGO_r3.bed \
+  -b /tmp/TGO_consensus_p5e2.bed | wc -l)
+TGO_FRIP3=$(awk -v a="$IN" -v b="$TOTAL" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r3.bed /tmp/TGO_consensus_p5e2.bed
+
+echo "THRESH | MACS_r1 | MACS_r2 | MACS_r3 | IDR_1v2 | IDR_1v3 | IDR_2v3 | CONSENSUS | MU_1v2 | MU_1v3 | MU_2v3 | PCT_1v2 | PCT_1v3 | PCT_2v3 | FRIP_r1 | FRIP_r2 | FRIP_r3"
+echo "0.05   | $TGO_M1 | $TGO_M2 | $TGO_M3 | $TGO_12 | $TGO_13 | $TGO_23 | $TGO_CONS | $TGO_MU_12 | $TGO_MU_13 | $TGO_MU_23 | ${TGO_PCT_12}% | ${TGO_PCT_13}% | ${TGO_PCT_23}% | $TGO_FRIP1 | $TGO_FRIP2 | $TGO_FRIP3"
+echo ""
+echo "--- TGO context (from previous runs) ---"
+echo "1e-3 | 4317  | 6606  | 4017  | 1531 | 1096 | 1114 | 1052 | 1.44 | 1.14 | 1.30 | 46.5% | 40.7% | 37.4% | 0.0257 | 0.0281 | 0.0229"
+echo "1e-2 | 8128  | 11903 | 7894  | 1700 | 1781 | 1407 | 1403 | 1.48 | 1.59 | 1.35 | 36.3% | 44.6% | 31.1% | 0.0296 | 0.0327 | 0.0269"
+echo "0.05 | (above)"
+echo "1e-1 | 35434 | 36750 | 34288 | 1739 | 2114 | 1423 | 1265 | 1.73 | 1.95 | 1.77 | 13.7% | 15.6% | 10.8% | 0.0235 | 0.0260 | 0.0218"
+
+echo ""
+echo "=== p=0.05 test complete ==="
+
+# ============================================================
+# THRESHOLD 1e-1
+# ============================================================
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep1.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep1_p1e1 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-1 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep1_p1e1.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep2.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep2_p1e1 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-1 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep2_p1e1.log
+
+macs3 callpeak \
+  -t 07_blacklist/TGO_rep3.clean.bam \
+  -c 07_blacklist/TGO_control.clean.bam \
+  -f BAMPE -g dm \
+  -n TGO_rep3_p1e1 \
+  --outdir 05_peaks_thresh/TGO \
+  --keep-dup all \
+  -p 1e-1 --call-summits \
+  2> 05_peaks_thresh/TGO/TGO_rep3_p1e1.log
+
+M1_1e1=$(wc -l < 05_peaks_thresh/TGO/TGO_rep1_p1e1_peaks.narrowPeak)
+M2_1e1=$(wc -l < 05_peaks_thresh/TGO/TGO_rep2_p1e1_peaks.narrowPeak)
+M3_1e1=$(wc -l < 05_peaks_thresh/TGO/TGO_rep3_p1e1_peaks.narrowPeak)
+
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep1_p1e1_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep1_p1e1.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep2_p1e1_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep2_p1e1.sorted.narrowPeak
+sort -k8,8nr 05_peaks_thresh/TGO/TGO_rep3_p1e1_peaks.narrowPeak \
+  > 10_idr_thresh/TGO/TGO_rep3_p1e1.sorted.narrowPeak
+conda activate idr
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p1e1.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep2_p1e1.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v2_p1e1.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v2_p1e1.log
+
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep1_p1e1.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p1e1.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_1v3_p1e1.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_1v3_p1e1.log
+
+idr \
+  --samples \
+    10_idr_thresh/TGO/TGO_rep2_p1e1.sorted.narrowPeak \
+    10_idr_thresh/TGO/TGO_rep3_p1e1.sorted.narrowPeak \
+  --input-file-type narrowPeak \
+  --rank p.value --idr-threshold 0.05 \
+  --output-file 10_idr_thresh/TGO/TGO_2v3_p1e1.txt \
+  --plot \
+  --log-output-file 10_idr_thresh/TGO/TGO_2v3_p1e1.log
+conda deactivate
+NCOLS_1e1=$(awk '{print NF; exit}' 10_idr_thresh/TGO/TGO_1v2_p1e1.txt)
+if [ "$NCOLS_1e1" -ge 12 ]; then
+  IDR_12_1e1=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v2_p1e1.txt | wc -l)
+  IDR_13_1e1=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_1v3_p1e1.txt | wc -l)
+  IDR_23_1e1=$(awk '$12 >= 1.301' 10_idr_thresh/TGO/TGO_2v3_p1e1.txt | wc -l)
+else
+  IDR_12_1e1=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v2_p1e1.txt | wc -l)
+  IDR_13_1e1=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_1v3_p1e1.txt | wc -l)
+  IDR_23_1e1=$(awk '$5 >= 540' 10_idr_thresh/TGO/TGO_2v3_p1e1.txt | wc -l)
+fi
+
+MU_12_1e1=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v2_p1e1.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+MU_13_1e1=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_1v3_p1e1.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+MU_23_1e1=$(grep "Final parameter values" 10_idr_thresh/TGO/TGO_2v3_p1e1.log \
+  | grep -oP '\[\K[0-9.]+' | head -1)
+
+PCT_12_1e1=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v2_p1e1.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+PCT_13_1e1=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_1v3_p1e1.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+PCT_23_1e1=$(grep "Number of peaks passing" 10_idr_thresh/TGO/TGO_2v3_p1e1.log \
+  | grep -oP '[0-9]+\.[0-9]+(?=%)' | head -1)
+
+if [ "$NCOLS_1e1" -ge 12 ]; then
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p1e1.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p1e1.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p1e1.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p1e1.merged.bed
+  awk '$12 >= 1.301 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p1e1.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p1e1.merged.bed
+else
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v2_p1e1.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v2_p1e1.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_1v3_p1e1.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_1v3_p1e1.merged.bed
+  awk '$5 >= 540 {print $1"\t"$2"\t"$3}' \
+    10_idr_thresh/TGO/TGO_2v3_p1e1.txt \
+    | sort -k1,1 -k2,2n | bedtools merge -i stdin \
+    > /tmp/TGO_2v3_p1e1.merged.bed
+fi
+
+CONSENSUS_1e1=$(cat \
+  /tmp/TGO_1v2_p1e1.merged.bed \
+  /tmp/TGO_1v3_p1e1.merged.bed \
+  /tmp/TGO_2v3_p1e1.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2' | wc -l)
+
+cat \
+  /tmp/TGO_1v2_p1e1.merged.bed \
+  /tmp/TGO_1v3_p1e1.merged.bed \
+  /tmp/TGO_2v3_p1e1.merged.bed \
+  | sort -k1,1 -k2,2n \
+  | bedtools merge -i stdin -c 1 -o count \
+  | awk '$4 >= 2 {print $1"\t"$2"\t"$3}' \
+  > /tmp/TGO_consensus_p1e1.bed
+rm /tmp/TGO_1v2_p1e1.merged.bed /tmp/TGO_1v3_p1e1.merged.bed /tmp/TGO_2v3_p1e1.merged.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep1.clean.bam > /tmp/TGO_r1_p1e1.bed
+TOTAL_R1=$(wc -l < /tmp/TGO_r1_p1e1.bed)
+IN_R1=$(bedtools intersect -u -a /tmp/TGO_r1_p1e1.bed \
+  -b /tmp/TGO_consensus_p1e1.bed | wc -l)
+FRIP_R1_1e1=$(awk -v a="$IN_R1" -v b="$TOTAL_R1" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r1_p1e1.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep3.clean.bam > /tmp/TGO_r3_p1e1.bed
+TOTAL_R3=$(wc -l < /tmp/TGO_r3_p1e1.bed)
+IN_R3=$(bedtools intersect -u -a /tmp/TGO_r3_p1e1.bed \
+  -b /tmp/TGO_consensus_p1e1.bed | wc -l)
+FRIP_R3_1e1=$(awk -v a="$IN_R3" -v b="$TOTAL_R3" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r3_p1e1.bed
+
+bedtools bamtobed -i 07_blacklist/TGO_rep2.clean.bam > /tmp/TGO_r2_p1e1.bed
+TOTAL_R2=$(wc -l < /tmp/TGO_r2_p1e1.bed)
+IN_R2=$(bedtools intersect -u -a /tmp/TGO_r2_p1e1.bed \
+  -b /tmp/TGO_consensus_p1e1.bed | wc -l)
+FRIP_R2_1e1=$(awk -v a="$IN_R2" -v b="$TOTAL_R2" 'BEGIN{printf "%.4f", a/b}')
+rm /tmp/TGO_r2_p1e1.bed /tmp/TGO_consensus_p1e1.bed
+
+echo "1e-1 | $M1_1e1 | $M2_1e1 | $M3_1e1 | $IDR_12_1e1 | $IDR_13_1e1 | $IDR_23_1e1 | $CONSENSUS_1e1 | $MU_12_1e1 | $MU_13_1e1 | $MU_23_1e1 | ${PCT_12_1e1}% | ${PCT_13_1e1}% | ${PCT_23_1e1}% | $FRIP_R1_1e1 | $FRIP_R2_1e1 | $FRIP_R3_1e1"
+
+echo ""
+echo "=== TGO threshold comparison complete ==="
+echo "All MACS3 peaks: 05_peaks_thresh/TGO/"
+echo "All IDR outputs: 10_idr_thresh/TGO/"
+```

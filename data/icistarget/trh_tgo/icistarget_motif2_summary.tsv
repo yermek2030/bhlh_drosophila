@@ -1,0 +1,16 @@
+quantity	value
+input regions submitted	614
+i-cisTarget regions mapped	775
+features tested (all databases)	28129
+PWM matrices tested	24453
+modERN tracks tested	1502
+features significant at NES>=3	420
+PWMs significant at NES>=3	375
+modERN significant at NES>=3	0
+clustered matrices available as PWMs (motifs.cb)	289
+TOMTOM Motif2 vs those matrices, hits at q<=0.05	0
+TOMTOM nearest neighbour	stark__RSWGAGMRHRR
+nearest neighbour E-value	0.119
+nearest neighbour q-value	0.238
+nearest neighbour matched consensus	AGTGAGAAAAA
+modERN positive control: eGFP-trh over Trh/Tgo peaks (NES)	1.49

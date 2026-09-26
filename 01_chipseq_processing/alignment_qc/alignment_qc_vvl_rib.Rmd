@@ -1,0 +1,220 @@
+---
+title: "Alignment and quality control: Vvl and Rib ChIP-seq"
+author: "Yermek Aiten"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{bash}
+#!/usr/bin/env bash
+# ============================================================
+# Paired-end alignment: ttk, vvl, rib (and Twist if PE confirmed)
+# ENCODE accessions: ENCSR362ZUH (ttk), ENCSR350VLI (vvl), ENCSR129UZN (rib)
+# SLURM array, one element per sample (10 samples); bowtie2 then sort/index/RG/markdup
+# Inputs: ${BASE_DIR}/01_fastq; outputs: 03_bam, 04_qc, 07_blacklist. Save as align_pe_controls.sh, run with sbatch
+# ============================================================
+
+
+
+set -euo pipefail
+
+# ============================================================
+# EDIT THESE PATHS
+# ============================================================
+BASE_DIR="$PROJECT_DIR"
+DM6_IDX="$PROJECT_DIR/dm6"
+PICARD_TMP="$PROJECT_DIR/tmp"
+BLACKLIST="$PROJECT_DIR/dm6-blacklist.v2.bed"
+
+# ============================================================
+# SAMPLE TABLE
+# Format: "SAMPLE_NAME  R1_ACCESSION  R2_ACCESSION"
+# Each accession is a FASTQ file under ${BASE_DIR}/01_fastq/
+# Controls are listed last (indices 8-9) so they can be skipped by
+# downstream ChIP-only steps if needed.
+# ============================================================
+SAMPLES=(
+  "RIB_rep1       ENCFF596NQN  ENCFF929RDR"
+  "RIB_rep2       ENCFF489JKI  ENCFF889PVP"
+  "RIB_control    ENCFF458LQH  ENCFF037LQP"
+  "VVL_rep1       ENCFF895FAF  ENCFF061PMX"
+  "VVL_rep2       ENCFF332TNC  ENCFF626ISZ"
+  "VVL_control    ENCFF218OYW  ENCFF466TTY")
+
+# ============================================================
+# RESOLVE THIS ARRAY ELEMENT
+# ============================================================
+ENTRY="${SAMPLES[$SLURM_ARRAY_TASK_ID]}"
+SAMPLE=$(echo "$ENTRY" | awk '{print $1}')
+ACC_R1=$(echo "$ENTRY" | awk '{print $2}')
+ACC_R2=$(echo "$ENTRY" | awk '{print $3}')
+
+FQ_R1="${BASE_DIR}/01_fastq/${ACC_R1}.fastq.gz"
+FQ_R2="${BASE_DIR}/01_fastq/${ACC_R2}.fastq.gz"
+SAM="${BASE_DIR}/03_bam/${SAMPLE}.sam"
+BAM_RAW="${BASE_DIR}/03_bam/${SAMPLE}.bam"
+BAM_RG="${BASE_DIR}/03_bam/${SAMPLE}.RG.bam"
+BAM_SORTED="${BASE_DIR}/03_bam/${SAMPLE}.RG.sorted.bam"
+BAM_RMDUP="${BASE_DIR}/03_bam/${SAMPLE}.rmdup.bam"
+DUP_METRICS="${BASE_DIR}/04_qc/${SAMPLE}.dup_metrics.txt"
+FLAGSTAT="${BASE_DIR}/04_qc/${SAMPLE}.flagstat.txt"
+
+mkdir -p "${BASE_DIR}/03_bam" \
+         "${BASE_DIR}/04_qc" \
+         "${BASE_DIR}/07_blacklist" \
+         logs
+
+echo "========================================"
+echo "SLURM array task : ${SLURM_ARRAY_TASK_ID}"
+echo "Sample           : ${SAMPLE}"
+echo "R1               : ${FQ_R1}"
+echo "R2               : ${FQ_R2}"
+echo "CPUs allocated   : ${SLURM_CPUS_PER_TASK}"
+echo "========================================"
+
+# Sanity check: both FASTQs must exist
+if [[ ! -f "${FQ_R1}" ]]; then
+  echo "ERROR: R1 FASTQ not found: ${FQ_R1}" >&2; exit 1
+fi
+if [[ ! -f "${FQ_R2}" ]]; then
+  echo "ERROR: R2 FASTQ not found: ${FQ_R2}" >&2; exit 1
+fi
+
+# ============================================================
+# STAGE 1, BOWTIE2 ALIGNMENT (paired-end)
+# --no-mixed/--no-discordant drop unpaired or discordant alignments, -X 2000 allows inserts up to 2000 bp, -p uses all CPUs
+# ============================================================
+#conda activate phd
+
+echo "[$(date)] Starting bowtie2 alignment..."
+
+
+bowtie2 \
+  -x "${DM6_IDX}" \
+  -1 "${FQ_R1}" \
+  -2 "${FQ_R2}" \
+  --no-mixed \
+  --no-discordant \
+  -X 2000 \
+  -p "${SLURM_CPUS_PER_TASK}" \
+  -S "${SAM}" \
+  2> "${BASE_DIR}/04_qc/${SAMPLE}.bowtie2.log"
+
+
+# ============================================================
+# STAGE 2, SAM -> SORTED BAM
+# Use all CPUs for sort; pipe avoids writing intermediate SAM to disk
+# ============================================================
+samtools sort \
+  -@ "${SLURM_CPUS_PER_TASK}" \
+  -o "${BAM_RAW}" \
+  "${SAM}"
+
+rm -f "${SAM}"
+samtools index -@ "${SLURM_CPUS_PER_TASK}" "${BAM_RAW}"
+
+echo "[$(date)] Sort complete."
+
+# ============================================================
+# STAGE 3, ADD READ GROUPS
+# ============================================================
+picard -Djava.io.tmpdir="${PICARD_TMP}" \
+  AddOrReplaceReadGroups \
+  I="${BAM_RAW}" \
+  O="${BAM_RG}" \
+  RGID="${SAMPLE}" \
+  RGLB=lib1 \
+  RGPL=ILLUMINA \
+  RGPU=unit1 \
+  RGSM="${SAMPLE}"
+
+echo "[$(date)] Read groups added."
+
+# ============================================================
+# STAGE 4, SORT AFTER READ GROUPS
+# ============================================================
+samtools sort \
+  -@ "${SLURM_CPUS_PER_TASK}" \
+  -o "${BAM_SORTED}" \
+  "${BAM_RG}"
+
+rm -f "${BAM_RAW}" "${BAM_RG}"
+echo "[$(date)] Sorted after RG."
+
+# ============================================================
+# STAGE 5, MARK AND REMOVE DUPLICATES
+# For paired-end data, Picard uses mate information to identify duplicates
+# correctly, no additional flags needed vs SE
+# ============================================================
+picard -Djava.io.tmpdir="${PICARD_TMP}" \
+  MarkDuplicates \
+  I="${BAM_SORTED}" \
+  O="${BAM_RMDUP}" \
+  M="${DUP_METRICS}" \
+  REMOVE_DUPLICATES=true \
+  ASSUME_SORTED=true
+
+samtools index -@ "${SLURM_CPUS_PER_TASK}" "${BAM_RMDUP}"
+rm -f "${BAM_SORTED}"
+echo "[$(date)] Duplicates removed."
+
+# ============================================================
+# STAGE 6, MAPQ FILTER (>=30) + BLACKLIST REMOVAL
+# For PE: -f 3 keeps only properly paired reads (both mates mapped,
+# correct orientation). -F 3852 removes unmapped, secondary, QC-fail,
+# supplementary reads. Combined with -q 30 this is the standard ENCODE
+# PE ChIP-seq filter.
+# ============================================================
+CLEAN_BAM="${BASE_DIR}/07_blacklist/${SAMPLE}.clean.bam"
+
+samtools view \
+  -@ "${SLURM_CPUS_PER_TASK}" \
+  -b \
+  -f 3 \
+  -F 3852 \
+  -q 30 \
+  "${BAM_RMDUP}" \
+  | bedtools intersect \
+      -v \
+      -abam stdin \
+      -b "${BLACKLIST}" \
+  > "${CLEAN_BAM}"
+
+samtools index -@ "${SLURM_CPUS_PER_TASK}" "${CLEAN_BAM}"
+echo "[$(date)] MAPQ filter and blacklist removal complete."
+
+# ============================================================
+# STAGE 7, FLAGSTAT ON CLEAN BAM
+# ============================================================
+samtools flagstat \
+  -@ "${SLURM_CPUS_PER_TASK}" \
+  "${CLEAN_BAM}" \
+  > "${FLAGSTAT}"
+
+echo "[$(date)] Flagstat written to ${FLAGSTAT}"
+cat "${FLAGSTAT}"
+
+# ============================================================
+# STAGE 8, FRAGMENT SIZE ESTIMATION WITH bamPEFragmentSize
+# Only meaningful for ChIP samples, not controls, but run on all for QC.
+# ============================================================
+#conda activate deeptools 2>/dev/null || true  # fall back to phd if no separate env
+
+bamPEFragmentSize \
+  -b "${CLEAN_BAM}" \
+  --outRawFragmentLengths \
+    "${BASE_DIR}/04_qc/${SAMPLE}.frag_lengths.txt" \
+  -o "${BASE_DIR}/04_qc/${SAMPLE}.frag_hist.png" \
+  -p "${SLURM_CPUS_PER_TASK}" \
+  2> "${BASE_DIR}/04_qc/${SAMPLE}.fragsize.log"
+
+#conda activate phd
+
+echo "[$(date)] Fragment size estimation complete."
+echo "[$(date)] === DONE: ${SAMPLE} ==="
+```
+

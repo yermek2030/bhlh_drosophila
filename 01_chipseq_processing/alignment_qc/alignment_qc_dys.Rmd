@@ -1,0 +1,273 @@
+---
+title: "Alignment and quality control: Dys ChIP-seq"
+author: "Yermek Aiten"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# BAM FILES MANAGEMENT
+```{bash}
+#!/usr/bin/env bash
+# ============================================================
+# DYS ChIP-seq Pipeline, Drosophila melanogaster (dm6)
+# Transcription factor: Dysfusion (Dys), bHLH-PAS activator
+# Heterodimer partner: Tango (Tgo), analysed in Chapter 3
+# Replicates: PAIRED-END throughout (3 biological replicates + 1 matched input control)
+# IDR strategy: pairwise (1v2, 1v3, 2v3); consensus = peaks in >=2/3 pairs
+# ============================================================
+
+set -euo pipefail
+
+# ============================================================
+# DIRECTORY STRUCTURE
+# ============================================================
+# 01_fastqc/dys/ raw FASTQ; 03_bam/ BAM; 04_qc/ dup metrics, insert sizes, fingerprint
+# 07_blacklist/ filtered BAMs; 08_qc/ correlation matrices
+# 09_peaks/ per-replicate MACS3 peaks; 10_idr/ pairwise IDR; 11_final/ final peak set
+# 12_pseudoreps/ not used, PE with 3 reps
+
+mkdir -p 03_bam 04_qc 07_blacklist 08_qc 09_peaks 10_idr 11_final
+mkdir -p $PROJECT_DIR/tmp
+
+
+# ============================================================
+# STAGE 1, ALIGNMENT (SAM -> BAM -> SORT)
+# Bowtie2 PE alignment of replicate FASTQs, run once per replicate (R1/R2 pair),
+# producing SAM files in 03_bam/:
+# ============================================================
+bowtie2 -x dm6 \
+   -1 01_fastqc/dys/ENCFF850GFV.fastq.gz \
+   -2 01_fastqc/dys/ENCFF038CZD.fastq.gz \
+   -S 03_bam/DYS_rep1.sam -p 8
+#
+ bowtie2 -x dm6 \
+   -1 01_fastqc/dys/ENCFF043NYJ.fastq.gz \
+   -2 01_fastqc/dys/ENCFF362XNT.fastq.gz \
+   -S 03_bam/DYS_rep2.sam -p 8
+#
+ bowtie2 -x dm6 \
+   -1 01_fastqc/dys/ENCFF207TJL.fastq.gz \
+   -2 01_fastqc/dys/ENCFF027UZF.fastq.gz \
+   -S 03_bam/DYS_rep3.sam -p 8
+
+for REP in 1 2 3
+do
+  samtools view -bS 03_bam/DYS_rep${REP}.sam \
+    | samtools sort -o 03_bam/DYS_rep${REP}.bam
+done
+
+# Remove SAM files to recover disk space
+rm 03_bam/DYS_rep*.sam
+
+
+# ============================================================
+# STAGE 2, ADD READ GROUPS
+# ============================================================
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/DYS_rep1.bam \
+  O=03_bam/DYS_rep1.RG.bam \
+  RGID=DYS_rep1 RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=DYS_rep1
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/DYS_rep2.bam \
+  O=03_bam/DYS_rep2.RG.bam \
+  RGID=DYS_rep2 RGLB=lib1 RGPL=ILLUMINA RGPU=unit2 RGSM=DYS_rep2
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/DYS_rep3.bam \
+  O=03_bam/DYS_rep3.RG.bam \
+  RGID=DYS_rep3 RGLB=lib1 RGPL=ILLUMINA RGPU=unit3 RGSM=DYS_rep3
+
+
+# ============================================================
+# STAGE 3, SORT AFTER READ GROUPS
+# ============================================================
+
+for REP in 1 2 3
+do
+  samtools sort -@ 8 \
+    -o 03_bam/DYS_rep${REP}.RG.sorted.bam \
+    03_bam/DYS_rep${REP}.RG.bam
+done
+
+
+# ============================================================
+# STAGE 4, MARK AND REMOVE DUPLICATES
+# ============================================================
+
+for REP in 1 2 3
+do
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+  MarkDuplicates \
+    I=03_bam/DYS_rep${REP}.RG.sorted.bam \
+    O=03_bam/DYS_rep${REP}.rmdup.bam \
+    M=04_qc/DYS_rep${REP}.dup_metrics.txt \
+    REMOVE_DUPLICATES=true \
+    ASSUME_SORTED=true
+done
+#TMP_DIR=$PROJECT_DIR/tmp
+
+
+# ============================================================
+# STAGE 5, FILTER BAM
+# -q 30  : MAPQ >= 30
+# -f 2   : properly paired reads only (PE-specific)
+# -F 1804: exclude unmapped, mate unmapped, not primary, supplementary, duplicate
+# ============================================================
+
+for REP in 1 2 3
+do
+  samtools view -b \
+    -q 30 \
+    -f 2 \
+    -F 1804 \
+    03_bam/DYS_rep${REP}.rmdup.bam \
+    > 03_bam/DYS_rep${REP}.filtered.bam
+
+  samtools index 03_bam/DYS_rep${REP}.filtered.bam
+done
+
+
+# ============================================================
+# STAGE 6, BLACKLIST REMOVAL (all replicates use filtered.bam)
+# ============================================================
+
+for REP in 1 2 3
+do
+  bedtools intersect -v \
+    -a 03_bam/DYS_rep${REP}.filtered.bam \
+    -b dm6-blacklist.v2.bed \
+    > 07_blacklist/DYS_rep${REP}.clean.bam
+
+  samtools index 07_blacklist/DYS_rep${REP}.clean.bam
+done
+
+
+# ============================================================
+# STAGE 7, CONTROL PROCESSING (paired-end)
+# Input control: ENCFF063EMW (R1), ENCFF833TRM (R2)
+# ============================================================
+
+bowtie2 -x dm6 \
+  -1 01_fastqc/dys/ENCFF063EMW.fastq.gz \
+  -2 01_fastqc/dys/ENCFF833TRM.fastq.gz \
+  -S 03_bam/DYS_control.sam -p 8
+
+samtools view -bS 03_bam/DYS_control.sam | samtools sort -o 03_bam/DYS_control.sorted.bam
+
+rm 03_bam/DYS_control.sam
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+  I=03_bam/DYS_control.sorted.bam \
+  O=03_bam/DYS_control.RG.bam \
+  RGID=DYS_ctrl RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=DYS_ctrl
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+MarkDuplicates \
+  I=03_bam/DYS_control.RG.bam \
+  O=03_bam/DYS_control.rmdup.bam \
+  M=04_qc/DYS_control.dup_metrics.txt \
+  REMOVE_DUPLICATES=true \
+  ASSUME_SORTED=true
+
+samtools view -b -q 30 -f 2 -F 1804 \
+  03_bam/DYS_control.rmdup.bam \
+  > 03_bam/DYS_control.filtered.bam
+
+bedtools intersect -v \
+  -a 03_bam/DYS_control.filtered.bam \
+  -b dm6-blacklist.v2.bed \
+  > 07_blacklist/DYS_control.clean.bam
+
+samtools index 07_blacklist/DYS_control.clean.bam
+
+
+# ============================================================
+# STAGE 8, MERGE REPLICATES INTO POOLED BAM (for signal assignment later)
+# ============================================================
+
+samtools merge -f 07_blacklist/DYS_merged.clean.bam \
+  07_blacklist/DYS_rep1.clean.bam \
+  07_blacklist/DYS_rep2.clean.bam \
+  07_blacklist/DYS_rep3.clean.bam
+
+samtools index 07_blacklist/DYS_merged.clean.bam
+
+
+# ============================================================
+# STAGE 9, QC BEFORE PEAK CALLING
+# (Peak calling itself is in threshold_comparison_dys.sh and production_peaks_dys.sh)
+# ============================================================
+
+# Step 1: flagstat to confirm depth
+samtools flagstat 07_blacklist/DYS_rep1.clean.bam
+samtools flagstat 07_blacklist/DYS_rep2.clean.bam
+samtools flagstat 07_blacklist/DYS_rep3.clean.bam
+samtools flagstat 07_blacklist/DYS_control.clean.bam
+
+# Step 2: fragment size QC (paired-end, actual insert sizes from TLEN)
+mkdir -p 04_qc/insert_sizes
+
+bamPEFragmentSize \
+  -b 07_blacklist/DYS_rep1.clean.bam \
+     07_blacklist/DYS_rep2.clean.bam \
+     07_blacklist/DYS_rep3.clean.bam \
+     07_blacklist/DYS_control.clean.bam \
+  --samplesLabel "DYS_rep1" "DYS_rep2" "DYS_rep3" "DYS_control" \
+  --histogram 04_qc/insert_sizes/DYS_insert_size_histogram.png \
+  --outRawFragmentLengths 04_qc/insert_sizes/DYS_insert_sizes.tab \
+  -p 8
+```
+
+```{bash}
+# Step 3: fingerprint (cumulative enrichment plot)
+mkdir -p 04_qc/fingerprint
+
+plotFingerprint \
+  -b 07_blacklist/DYS_rep1.clean.bam \
+     07_blacklist/DYS_rep2.clean.bam \
+     07_blacklist/DYS_rep3.clean.bam \
+     07_blacklist/DYS_control.clean.bam \
+  --plotFile 04_qc/fingerprint/DYS_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/DYS_fingerprint.tab \
+  --numberOfSamples 500000 \
+  -p 8
+
+# Step 4: replicate correlation (Spearman on binned coverage)
+multiBamSummary bins \
+  -b 07_blacklist/DYS_rep1.clean.bam \
+     07_blacklist/DYS_rep2.clean.bam \
+     07_blacklist/DYS_rep3.clean.bam \
+  --labels DYS_rep1 DYS_rep2 DYS_rep3 \
+  -o 08_qc/DYS.npz \
+  -p 8
+
+plotCorrelation \
+  -in 08_qc/DYS.npz \
+  --corMethod spearman \
+  --skipZeros \
+  --colorMap RdYlBu \
+  --whatToPlot heatmap \
+  --plotFile 08_qc/DYS_spearman_heatmap.pdf \
+  --outFileCorMatrix 08_qc/DYS_spearman_matrix.txt
+
+plotCorrelation \
+  -in 08_qc/DYS.npz \
+  --corMethod spearman \
+  --whatToPlot scatterplot \
+  --plotFile 08_qc/DYS_spearman_scatter.pdf
+
+# Spearman interpretation: >= 0.8 good, 0.6-0.8 moderate, < 0.6 problematic
+# === END OF UPSTREAM PIPELINE ===
+# Next step: threshold_comparison_dys.sh to select the optimal MACS3 p-value
+# Then:    production_peaks_dys.sh to call peaks, run pairwise IDR, and build consensus
+```

@@ -1,0 +1,7 @@
+"Factor","Family","N_scanned","N_Motif2_pos","Pct_Motif2","OR_vs_TrhTgo","p_value","Window_bp","Threshold"
+"Trh/Tgo (ref)","bHLH-PAS",169,70,41.4,1,NA,201,"p < 1e-4"
+"TWI","bHLH (no PAS)",1892,340,18,0.31,1.64830318874934e-11,201,"p < 1e-4"
+"VVL","POU-HD",258,95,36.8,0.82,0.361263914814361,201,"p < 1e-4"
+"RIB","BTB-ZF",138,27,19.6,0.35,4.31551159679994e-05,201,"p < 1e-4"
+"DA","bHLH class I hub",264,72,27.3,0.53,0.003223481141058,201,"p < 1e-4"
+"Matched non-Tgo BG","--",614,50,8.1,0.13,2.66668391227255e-22,201,"p < 1e-4"

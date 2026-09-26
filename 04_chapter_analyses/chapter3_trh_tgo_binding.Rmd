@@ -1,0 +1,3656 @@
+---
+title: "CHAPTER 3"
+author: "Yermek Aiten"
+subtitle: "Genome-wide binding analysis of Trh/Tgo"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: show
+    number_sections: true
+toc_depth: 2
+---
+
+```{=html}
+<style>
+body { counter-reset: h1counter 2; }
+h1 { counter-increment: h1counter; }
+h1::before { content: counter(h1counter) ". "; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9em;
+}
+th {
+  background-color: #2c3e50;
+  color: white;
+  padding: 8px 12px;
+  text-align: left;
+}
+td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #ddd;
+}
+tr:nth-child(even) { background-color: #f5f5f5; }
+mark {
+  background-color: #ffe066;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+</style>
+```
+
+```{r project-paths, include=FALSE}
+## Repository root: the environment variable PROJECT_DIR, or the working directory.
+PROJECT_DIR <- normalizePath(Sys.getenv("PROJECT_DIR", unset = "."), mustWork = TRUE)
+if (!file.exists(file.path(PROJECT_DIR, "README.md")))
+  stop("PROJECT_DIR does not point at the repository root: ", PROJECT_DIR)
+
+## Values quoted in the dissertation are kept in results/reported_values.tsv
+## (columns section, name, value). Writing a name that is already there
+## replaces its value, so scripts can be re-run singly and in any order.
+VALUES_FILE <- file.path(PROJECT_DIR, "results", "reported_values.tsv")
+save_values <- function(section, values) {
+  dir.create(dirname(VALUES_FILE), recursive = TRUE, showWarnings = FALSE)
+  tab <- if (file.exists(VALUES_FILE)) {
+    read.delim(VALUES_FILE, colClasses = "character", quote = "", comment.char = "")
+  } else {
+    data.frame(section = character(), name = character(), value = character())
+  }
+  for (nm in names(values)) {
+    v   <- gsub("[\t\r\n]+", " ", paste(as.character(values[[nm]]), collapse = " "))
+    tab <- tab[tab$name != nm, , drop = FALSE]
+    tab <- rbind(tab, data.frame(section = section, name = nm, value = v))
+  }
+  tab <- tab[order(tab$section, tab$name), , drop = FALSE]
+  write.table(tab, VALUES_FILE, sep = "\t", quote = FALSE, row.names = FALSE)
+  cat(sprintf("%d values written to %s\n", length(values), VALUES_FILE))
+}
+
+
+## Colours
+PAL_INK <- c(
+  outline    = "#333333",   # bar and Venn outlines
+  gridline   = "#DDDDDD",
+  annotation = "#666666",   # p-values, n = counts
+  threshold  = "#882255",   # significance thresholds, +/-1.96 lines
+  fit        = "#4477AA",   # fitted / OLS trend lines
+  neutral    = "#BBBBBB",   # non-significant, background sets
+  band       = "#EDEDED",   # shaded stage/facet bands and strip backgrounds
+  highlight_band = "#4477AA", # tint marking an agreement region (used at low alpha)
+  emphasis   = "#CC3311",   # the one highlighted subset in an otherwise neutral plot
+## Ink for stars/text on PAL_DIV marks (Fig 4.9): black #000000, worst-case WCAG contrast 4.34 across 21-point ramp sample.
+## Not valid for PAL_SEQ (viridis): no single ink stays legible, so labels sit off the dot instead.
+## Exception: geom_tile heatmaps use ink_on_seq() (below), keyed on tile lightness, worst-case 4.16 across the ramp.
+  on_mark    = "#000000",
+
+  ## Two-tier ink for ink_on_seq(). `on_mark_dark` is #1A1A1A rather
+  ## than the #000000 above: on the LIGHT half of viridis both clear the floor
+  ## comfortably, and #1A1A1A matches the ink weight of the surrounding axis text,
+  ## so the matrix does not look heavier than the panel around it.
+  on_mark_dark  = "#1A1A1A",
+  on_mark_light = "#FFFFFF"
+)
+
+PAL_HETERO <- c(
+  "Trh/Tgo"  = "#117733",   # green    L* 44
+  "Sim/Tgo"  = "#E69F00",   # amber    L* 71
+  "Dys/Tgo"  = "#66CCEE",   # sky      L* 77
+  "Sima/Tgo" = "#AA3377"    # magenta  L* 42
+)
+
+PAL_SUBUNIT <- c(
+  "Trh"  = PAL_HETERO[["Trh/Tgo"]],
+  "Sim"  = PAL_HETERO[["Sim/Tgo"]],
+  "Dys"  = PAL_HETERO[["Dys/Tgo"]],
+  "Sima" = PAL_HETERO[["Sima/Tgo"]],
+  "Tgo"  = "#DDCC77"
+)
+
+pal_venn_tgo <- function(alpha_subunit) {
+  if (!alpha_subunit %in% names(PAL_SUBUNIT)) {
+    stop("pal_venn_tgo(): expected an alpha-subunit name (",
+         paste(setdiff(names(PAL_SUBUNIT), "Tgo"), collapse = ", "),
+         "), got ", deparse(alpha_subunit),
+         ". For Venn transparency use PAL_VENN_ALPHA.", call. = FALSE)
+  }
+  unname(c(PAL_SUBUNIT[[alpha_subunit]], PAL_SUBUNIT[["Tgo"]]))
+}
+
+PAL_CONTEXT <- c(
+  prox_peak    = "#4477AA", # promoter-proximal peak (non-annotated)   blue
+  prox_enh     = "#332288", # promoter-proximal enhancer (annotated)   indigo
+  distal_enh   = "#DDAA33", # distal enhancer (annotated)  <- KEY CLASS  gold
+  distal_unann = "#994455", # distal peak (non-annotated)              maroon
+  all_peaks    = "#BBBBBB", # pooled / reference set                   grey
+  ## POOLED positional classes, supersets of the four subsets above, used by
+  ## figures that split peaks by POSITION only (Ch3 df$Context, Ch4 Subset).
+  ## They keep the family reading (cool = proximal, warm = distal) but are
+  ## distinct from every subset colour, so a reader cannot carry a
+  ## subset-specific claim across to a pooled figure. Chosen by measurement over
+  ## the three figures that use them: worst-case dE 34.6.
+  prox_all     = "#0077BB", # all promoter-proximal peaks (pooled)      deep blue
+  distal_all   = "#EE7733"  # all distal peaks (pooled)                 orange
+)
+
+pal_context <- function(keys) {
+  stopifnot(all(keys %in% names(PAL_CONTEXT)))
+  unname(PAL_CONTEXT[keys])
+}
+
+PAL_CONTEXT_LABELS <- c(
+  ## --- (A) pooled positional ---
+  "Promoter"                               = PAL_CONTEXT[["prox_all"]],
+  "promoter-proximal"                          = PAL_CONTEXT[["prox_all"]],
+  "distal (>1 kb)"                         = PAL_CONTEXT[["distal_all"]],
+  "all peaks"                              = PAL_CONTEXT[["all_peaks"]],
+  ## --- (B) 2x2 position-by-annotation subsets ---
+  "Promoter-proximal peak (non-annotated)" = PAL_CONTEXT[["prox_peak"]],
+  "Promoter-proximal enhancer (annotated)" = PAL_CONTEXT[["prox_enh"]],
+  "Distal enhancer (annotated)"            = PAL_CONTEXT[["distal_enh"]],
+  "Distal peak (non-annotated)"            = PAL_CONTEXT[["distal_unann"]]
+)
+
+PAL_FEATURE <- c(
+  "Promoter (<=1kb)"  = "#332288",  # dark indigo - nearest the TSS (darkest blue)
+  "Promoter (1-2kb)"  = "#66CCEE",  # light sky   - still proximal, further out
+  "5' UTR"            = "#117733",  # green       - transcript begins
+  "Exon"              = "#E69F00",  # amber       - coding body (1st + other)
+  "3' UTR"            = "#997700",  # dark gold   - transcript ends
+  "1st Intron"        = "#DDCC77",  # sand
+  "Other Intron"      = "#EE6677",  # rose
+  "Downstream"        = "#CC79A7",  # pink        - past the gene
+  "Distal Intergenic" = "#AA3377"   # magenta     - furthest from any gene
+)
+
+pal_feature <- function(x) {
+  levs <- if (inherits(x, "ggplot")) {
+            f <- x$data$Feature
+            if (is.factor(f)) levels(f) else unique(as.character(f))
+          } else if (is.factor(x)) levels(x) else unique(as.character(x))
+
+  ## Label -> palette key. Which distinctions survive is a deliberate choice:
+  ## promoter distance bins are preserved (the text argues about distance from
+  ## the TSS), exon classes are merged, and downstream distance bins are merged
+  ## (distance past the 3' end carries no claim). Anything not handled here must
+  ## error, never be quietly folded into a neighbour.
+  key_of <- function(lab) {
+    lab <- trimws(lab)
+    ## Promoter: keep the bin, but normalise the many spellings ChIPseeker and
+    ## its versions emit ("<=1kb", "<1kb", "1-2kb", "2-3kb").
+    if (grepl("^Promoter", lab)) {
+      q <- sub("^Promoter\\s*", "", lab)
+      q <- gsub("[()<= ]", "", q)                    # "(<=1kb)" -> "1kb"
+      if (q %in% c("", "1kb", "0-1kb"))  return("Promoter (<=1kb)")
+      if (q %in% c("1-2kb", "2kb"))      return("Promoter (1-2kb)")
+      return(lab)                                    # unknown bin -> error below
+    }
+    ## Everything else: drop the distance qualifier, then merge the classes the
+    ## palette treats as one.
+    lab <- trimws(sub("\\s*\\(.*", "", lab))
+    lab <- sub("^(1st|Other) Exon$", "Exon", lab)     # exon classes combined
+    lab <- sub("^Exon$",   "Exon",   lab)
+    lab <- sub("^Intron$", "Other Intron", lab)
+    lab <- sub("^Intergenic$", "Distal Intergenic", lab)
+    lab <- sub("^fiveUTR$",  "5' UTR", lab)
+    lab <- sub("^threeUTR$", "3' UTR", lab)
+    lab
+  }
+  keys <- vapply(levs, key_of, character(1))
+  bad  <- levs[!keys %in% names(PAL_FEATURE)]
+  if (length(bad)) {
+    stop("pal_feature(): unrecognised annotation level(s): ",
+         paste(sQuote(bad), collapse = ", "),
+         "\n  Add them to PAL_FEATURE rather than letting ",
+         "ggplot fall back to its default scale.", call. = FALSE)
+  }
+  setNames(unname(PAL_FEATURE[keys]), levs)
+}
+
+PAL_SEQ <- function(n = 9) hcl.colors(n, "viridis")
+
+seq_limits <- function(x, domain = NULL, min_span = NULL) {
+  x <- x[is.finite(x)]
+  if (!length(x)) return(if (is.null(domain)) c(0, 1) else range(domain))
+  lo <- min(x); hi <- max(x)
+  if (hi > lo) return(c(lo, hi))            # normal case: data-derived, untouched
+  if (!is.null(domain)) return(range(domain))   # degenerate: use natural domain
+  if (is.null(min_span)) min_span <- if (hi == 0) 1 else abs(hi)
+  sort(c(hi, hi + min_span))                # degenerate, no domain: expand upward
+}
+
+.seq_args <- function(dots, values, domain) {
+  if (is.null(values)) return(dots)
+  if (!is.null(dots$limits))
+    stop("scale_*_seq(): pass either `values` (guarded limits) or `limits`, not both.",
+         call. = FALSE)
+  dots$limits <- seq_limits(values, domain = domain)
+  if (is.null(dots$oob)) dots$oob <- scales::squish
+  dots
+}
+
+scale_fill_seq   <- function(..., rev = FALSE, values = NULL, domain = NULL) {
+  cols <- PAL_SEQ(9); if (rev) cols <- base::rev(cols)
+  args <- .seq_args(list(...), values, domain)
+  do.call(ggplot2::scale_fill_gradientn, c(list(colours = cols), args))
+}
+
+geom_point_seq <- function(..., stroke_colour = PAL_INK[["outline"]],
+                           stroke_width = 0.35) {
+  ggplot2::geom_point(..., shape = 21, stroke = stroke_width,
+                      colour = stroke_colour)
+}
+
+PAL_BINARY <- c(pos = "#CC6677", neg = "#4477AA")
+
+pal_binary <- function(pos_label, neg_label) {
+  setNames(c(PAL_BINARY[["pos"]], PAL_BINARY[["neg"]]), c(pos_label, neg_label))
+}
+
+PAL_OCCUPANCY <- c(
+  alpha_only = "#66CCEE",                  # Trh-unique  (no Tgo): unpartnered = cool
+  joint      = PAL_HETERO[["Trh/Tgo"]],    # Trh/Tgo joint peaks, the reference set
+  beta_only  = PAL_SUBUNIT[["Tgo"]],       # Tgo-unique  (no Trh): the Tgo sand
+  genome_ref = "#888888"                   # genome-wide enhancers: a darker baseline
+)
+
+PAL_TISSUE <- c(
+  "Tracheal+SG" = "#94A680",   # tracheal system + salivary gland  sage-green
+  "CNS+midline" = "#A8DCD1"    # CNS + ventral midline             pale teal
+)
+
+PAL_VENN_ALPHA <- 0.8
+
+pal_venn_tissue <- function(heterodimer, tissue) {
+  stopifnot(heterodimer %in% names(PAL_HETERO))
+  i <- match(tolower(tissue), tolower(names(PAL_TISSUE)))
+  if (is.na(i)) stop("unknown tissue reference list: ", tissue,
+                     " (expected one of ", paste(names(PAL_TISSUE), collapse = ", "), ")")
+  unname(c(PAL_HETERO[[heterodimer]], PAL_TISSUE[[i]]))
+}
+
+pal_disttotss <- function(x) {
+  levs <- if (inherits(x, "ggplot")) {
+            f <- x$data$Feature
+            if (is.factor(f)) levels(f) else unique(as.character(f))
+          } else if (is.factor(x)) levels(x) else unique(as.character(x))
+  n <- length(levs)
+  if (!n) stop("pal_disttotss(): no distance-bin levels found", call. = FALSE)
+  ## PAL_SEQ runs dark -> light, so the first level (nearest TSS) is darkest.
+  ## plotDistToTSS reverses its own level order before plotting, so the caller
+  ## must apply this to the levels as they appear on the built plot.
+  setNames(PAL_SEQ(n), levs)
+}
+
+
+## Bar chart
+thesis_text_col <- function(fill) {
+  rgb <- grDevices::col2rgb(fill) / 255
+  lum <- 0.299 * rgb[1, ] + 0.587 * rgb[2, ] + 0.114 * rgb[3, ]
+  ifelse(lum > 0.5, "black", "white")
+}
+
+thesis_p_expr <- function(p, digits = 2) {
+  if (is.na(p)) return(NA_character_)
+  ## The formatted value is QUOTED, so plotmath prints it as formatted rather
+  ## than re-formatting it as a number: unquoted, a Fisher p of 1.000 renders
+  ## as "1" and 2.10 as "2.1", losing the fixed significant figures that
+  ## must be preserved at every mention.
+  if (p < 1e-3) {
+    parts <- strsplit(formatC(p, format = "e", digits = digits), "e")[[1]]
+    sprintf("italic(p)=='%s' %%*%% 10^{%d}", parts[1], as.integer(parts[2]))
+  } else {
+    ## `digits` governs both branches. "fg" formats to significant digits
+    ## rather than decimal places; flag "#" keeps trailing zeros (p = 1
+    ## prints 1.0, not 1).
+    sprintf("italic(p)=='%s'",
+            formatC(signif(p, digits), format = "fg", digits = digits,
+                    flag = "#"))
+  }
+}
+
+thesis_bar <- function(data, x, y, fill = x,
+                        value = NULL, value_fmt = "%.1f%%",
+                        count = NULL, sig = NULL,
+                        facet = NULL, n_lab = NULL, n_lab_size = 3.0,
+                        fills = NULL, y_max = NULL, y_lab = NULL,
+                        dashed_at = NULL, global_p = NULL, caption_sig = NULL,
+                        inside_frac = 0.28, bar_width = 0.62, base_size = 11,
+                        title = NULL, facet_free_x = TRUE) {
+
+  d <- as.data.frame(data)
+  d$.x <- d[[x]]; d$.y <- d[[y]]; d$.fill <- d[[fill]]
+
+  ## primary value label
+  if (!is.null(value)) {
+    d$.value <- as.character(d[[value]])
+  } else if (!is.na(value_fmt)) {
+    d$.value <- sprintf(value_fmt, d$.y)
+  } else {
+    d$.value <- NA_character_
+  }
+  d$.count <- if (!is.null(count)) as.character(d[[count]]) else NA_character_
+  d$.sig   <- if (!is.null(sig))   as.character(d[[sig]])   else NA_character_
+
+  ## y range + headroom (space for the star that always sits above the bar)
+  y_top_data <- max(d$.y, na.rm = TRUE)
+  if (is.null(y_max)) y_max <- y_top_data * 1.32
+  gap  <- 0.045 * y_max            # one label-line height, scaled to axis
+  inside_cut <- inside_frac * y_max
+
+  ## fill -> contrast colour for inside text
+  if (!is.null(fills)) {
+    missing_fill <- setdiff(unique(as.character(d$.fill)), names(fills))
+    if (length(missing_fill))
+      stop("thesis_bar(): fill level(s) not found in `fills` (would render grey): ",
+           paste(sprintf("'%s'", missing_fill), collapse = ", "),
+           "\n  Available in `fills`: ",
+           paste(sprintf("'%s'", names(fills)), collapse = ", "))
+  }
+  fill_levels <- if (!is.null(fills)) names(fills) else unique(as.character(d$.fill))
+  fill_cols   <- if (!is.null(fills)) fills else scales::hue_pal()(length(fill_levels))
+  names(fill_cols) <- fill_levels
+  d$.txtcol <- thesis_text_col(fill_cols[as.character(d$.fill)])
+
+  ## ---- per-bar label geometry ------------------------------------------
+  d$.inside <- d$.y >= inside_cut
+  has_count <- !is.na(d$.count)
+  # value line: inside -> just below bar top; above -> primary value uppermost
+  d$.val_y   <- ifelse(d$.inside, d$.y - gap,
+                       ifelse(has_count, d$.y + 2 * gap, d$.y + gap))
+  d$.val_col <- ifelse(d$.inside, d$.txtcol, "black")
+  # count line: inside -> below the value; above -> nearer the bar than value
+  d$.cnt_y   <- ifelse(d$.inside, d$.y - 2 * gap, d$.y + gap)
+  d$.cnt_col <- ifelse(d$.inside, d$.txtcol, "black")
+  # significance always above the bar; clears above-bar labels when present
+  above_labels <- (!d$.inside) & (has_count | !is.na(d$.value))
+  d$.sig_y    <- d$.y + ifelse(above_labels, 3 * gap, gap * 1.4)
+
+  ## ---- build plot -------------------------------------------------------
+  p <- ggplot(d, aes(x = .x, y = .y, fill = .fill)) +
+    geom_col(width = bar_width, colour = "black", linewidth = 0.4,
+             show.legend = FALSE)
+
+  if (!is.null(dashed_at))
+    p <- p + geom_hline(yintercept = dashed_at, linetype = "dashed",
+                        colour = PAL_INK[["neutral"]], linewidth = 0.5)
+
+  ## value label
+  if (any(!is.na(d$.value)))
+    p <- p + geom_text(aes(y = .val_y, label = .value, colour = .val_col),
+                       fontface = "bold", size = 3.5, show.legend = FALSE,
+                       na.rm = TRUE)
+  ## count label
+  if (any(!is.na(d$.count)))
+    p <- p + geom_text(aes(y = .cnt_y, label = .count, colour = .cnt_col),
+                       size = 3.0, show.legend = FALSE, na.rm = TRUE)
+  ## per-bar significance (above, spaced)
+  if (any(!is.na(d$.sig)))
+    p <- p + geom_text(aes(y = .sig_y, label = .sig),
+                       fontface = "italic", size = 3.4, colour = PAL_INK[["annotation"]],
+                       na.rm = TRUE)
+
+  p <- p +
+    scale_colour_identity() +
+    scale_fill_manual(values = fill_cols) +
+    scale_y_continuous(limits = c(0, y_max), expand = expansion(mult = c(0, 0)))
+
+  ## facets, free_x so each panel shows only its own x categories
+  if (!is.null(facet))
+    p <- p + facet_wrap(stats::as.formula(paste0("~", facet)), nrow = 1,
+                        scales = if (facet_free_x) "free_x" else "fixed")
+
+  ## per-facet n = ... annotation, top-right
+  if (!is.null(n_lab)) {
+    key <- if (!is.null(facet)) facet else NULL
+    nd  <- if (!is.null(key)) d[!duplicated(d[[key]]), ] else d[1, , drop = FALSE]
+    nd$.nlab <- as.character(nd[[n_lab]])
+    parse_n  <- any(grepl("==|~", nd$.nlab))
+    p <- p + geom_text(data = nd,
+                       aes(x = Inf, y = Inf, label = .nlab),
+                       hjust = 1.08, vjust = 1.6, size = n_lab_size, colour = PAL_INK[["annotation"]],
+                       fontface = "italic", parse = parse_n,
+                       inherit.aes = FALSE)
+  }
+
+  ## single centred p-value, drawn once (as a plot tag), not per-facet,
+  ## so a faceted figure shows one central p-value instead of one per panel.
+  plot_tag <- NULL
+  if (!is.null(global_p)) plot_tag <- parse(text = thesis_p_expr(global_p))[[1]]
+
+  cap <- caption_sig
+  p <- p +
+    labs(x = NULL, y = y_lab, title = title, caption = cap, tag = plot_tag) +
+    theme_classic(base_size = base_size) +
+    theme(
+      ## BOLD: the panel letter is the one bold element of the house style.
+      plot.tag          = element_text(size = base_size + 2, face = "bold"),
+      plot.tag.position  = c(0.5, 0.86),
+      strip.text       = element_text(face = "bold", size = base_size),
+      strip.background = element_rect(fill = NA, colour = "black", linewidth = 0.6),
+      axis.title.y     = element_text(size = base_size - 0.5),
+      axis.text.x      = element_text(size = base_size - 2, colour = "black"),
+      axis.text.y      = element_text(size = base_size - 2, colour = "black"),
+      axis.ticks.x     = element_blank(),
+      panel.spacing    = unit(1.0, "cm"),
+      plot.caption     = element_text(hjust = 0, size = base_size - 2.5,
+                                      colour = PAL_INK[["outline"]]),
+      plot.title       = element_text(size = base_size, face = "bold"),
+      plot.margin      = margin(8, 10, 8, 8)
+    )
+  p
+}
+
+
+## UpSet plot
+upset_class_cols <- function()
+  c("Promoter-containing" = PAL_CONTEXT[["prox_all"]],
+    "Genic, non-promoter" = PAL_FEATURE[["1st Intron"]],
+    "Intergenic"          = PAL_CONTEXT[["distal_all"]])
+
+upset_bars <- function(a, n_int = 20, base_size = 13) {
+  y  <- as.matrix(a@detailGenomicAnnotation); nn <- colnames(y)
+  sets <- lapply(seq_len(nrow(y)), function(i) nn[y[i, ]])
+  res  <- tibble::tibble(anno = sets)
+  res$class <- factor(vapply(sets, function(s) {
+    if ("Promoter" %in% s) "Promoter-containing"
+    else if (any(c("Intergenic", "distal_intergenic") %in% s)) "Intergenic"
+    else "Genic, non-promoter" }, character(1)),
+    levels = c("Promoter-containing", "Genic, non-promoter", "Intergenic"))
+  ## DISPLAY LABELS. ChIPseeker's detailGenomicAnnotation columns are code
+  ## identifiers (fiveUTR, threeUTR, distal_intergenic, lowercase genic). The
+  ## text, tables and PAL_FEATURE all use "5' UTR", "3' UTR",
+  ## "Distal intergenic". Relabel for DISPLAY only, set membership and every
+  ## count come from the untouched column names above, so nothing quantitative
+  ## depends on this map.
+  feat_labels <- c(genic             = "Genic",
+                   Promoter          = "Promoter",
+                   Intron            = "Intron",
+                   Exon              = "Exon",
+                   fiveUTR           = "5\u2032 UTR",
+                   threeUTR          = "3\u2032 UTR",
+                   Intergenic        = "Intergenic",
+                   distal_intergenic = "Distal intergenic",
+                   downstream        = "Downstream")
+  miss <- setdiff(nn, names(feat_labels))
+  if (length(miss))
+    stop("upset_bars(): no display label for ChIPseeker column(s) ",
+         paste(sQuote(miss), collapse = ", "),
+         ". Add them to feat_labels rather than letting the raw name print.",
+         call. = FALSE)
+  ## scale_x_upset() takes `sets` but has no `labels` argument (checked against
+  ## ggupset's formals), so the relabel is applied to the set members in the
+  ## data. res$class was already computed from the RAW names above, so the
+  ## grouping is unaffected by this rename.
+  res$anno <- lapply(res$anno, function(s) unname(feat_labels[s]))
+
+  ggplot2::ggplot(res, ggplot2::aes(x = anno, fill = class)) +
+    ggplot2::geom_bar(width = 0.72) +
+    ggplot2::scale_fill_manual(values = upset_class_cols(), name = NULL) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.06))) +
+    ggupset::scale_x_upset(n_intersections = n_int, order_by = "freq") +
+    ggplot2::labs(x = NULL, y = "Peak count") +
+    ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(legend.position = "none",
+          panel.grid.major.x = ggplot2::element_blank(),
+          ## FULL BLACK TEXT. theme_minimal() (like theme_grey()) sets axis.text
+          ## to #4D4D4D, a 30% grey. Measured in the rendered png, the y tick
+          ## numbers and the genomic-feature names to the left of the dot matrix
+          ## came out #3C3C3C-#4B4B4B. Those elements print at ~8.6 pt, so they
+          ## need maximum contrast rather than 30% grey. Set explicitly on each
+          ## element: axis.text.x/.y do not inherit a colour set only on
+          ## axis.text once the child elements are themselves specified.
+          axis.text    = ggplot2::element_text(colour = "black"),
+          axis.text.x  = ggplot2::element_text(colour = "black"),
+          axis.text.y  = ggplot2::element_text(colour = "black"),
+          axis.title   = ggplot2::element_text(colour = "black"),
+          axis.title.y = ggplot2::element_text(size = 13.5, colour = "black",
+                                               margin = ggplot2::margin(r = 5)),
+          plot.margin = ggplot2::margin(t = 4, r = 2, b = 2, l = 2, unit = "pt"))
+}
+
+thesis_upset <- function(a, label, n_int = 20, base_size = 13) {
+  upset_bars(a, n_int = n_int, base_size = base_size) +
+    ggplot2::theme(
+      legend.position      = c(0.74, 0.88),
+      legend.justification = c(0, 1),
+      legend.background    = ggplot2::element_rect(
+                               fill = grDevices::adjustcolor("white", alpha.f = 0.85),
+                               colour = NA),
+      legend.key.size      = grid::unit(13, "pt"),
+      legend.text          = ggplot2::element_text(size = 13, colour = "black"),
+      plot.title           = ggplot2::element_text(face = "bold", size = 16,
+                                                   colour = "black", hjust = 0)) +
+    ggplot2::labs(title = label)
+}
+```
+
+# Set-up and data import
+```{r setup, include=TRUE, eval=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+# Output locations
+REFERENCE_LISTS <- file.path(PROJECT_DIR,"data/reference_gene_lists")
+FIGURES_DIR <- file.path(PROJECT_DIR, "results/figures")
+#dir.create(FIGURES_DIR, recursive = TRUE, showWarnings = FALSE)
+EXPORT_DIR <- file.path(PROJECT_DIR, "data/chapter3")
+dir.create(EXPORT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+
+library(ChIPseeker)
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+library(clusterProfiler)
+library(AnnotationDbi)
+library(org.Dm.eg.db)
+library(Biostrings)
+library(seqinr)
+library(rtracklayer)
+library(ChIPpeakAnno)
+library(ggplot2)
+library(ggplotify)
+library(DiffBind)
+library(gridExtra)
+library(motifStack)
+library(reactome.db)
+library(DBI)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(cowplot)
+library(GenomeInfoDb)
+#Loading data
+tgo_narrowPeak_file <- file.path(PROJECT_DIR, "data/final_peaks/TGO_IDR0.05.final.narrowPeak")
+trh_narrowPeak_file <- file.path(PROJECT_DIR, "data/final_peaks/TRH_IDR0.05.final.narrowPeak")
+
+# Focusing on standard assemblies of chromosomes & Deduplication
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",
+                       qValue = "numeric", peak = "integer")
+Trh_ChIP_peaks <- import(trh_narrowPeak_file, format = "BED", extraCols = extraCols_narrowPeak
+                       ); Trh_ChIP_peaks
+Tgo_ChIP_peaks <- import(tgo_narrowPeak_file, format = "BED", extraCols = extraCols_narrowPeak
+                       ); Tgo_ChIP_peaks #
+table(seqnames(Trh_ChIP_peaks)); table(seqnames(Tgo_ChIP_peaks))
+txdb <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+files <- list(Trh_ChIP_peaks, Tgo_ChIP_peaks)
+names(files)<- c("Trh ChIP-seq", "Tgo ChIP-seq")
+# Remove non-standard chromosome/scaffold entries (e.g. 'chrX_DS484057v1_random')
+seqlevels(files[[1]]); seqlevels(files[[2]])
+good_chr <- c("chr3L","chr3R","chrX","chr2L","chr2R","chr4")
+for(i in 1:length(files)){
+  gr <- files[[i]]
+files[[i]] <- gr[seqnames(gr) %in% good_chr]
+files[[i]] <- keepSeqlevels(files[[i]], 
+                            good_chr,
+                            pruning.mode = "coarse"); unique(seqnames(files[[i]]))
+}
+# Deduplication
+Trh_clean <- files[[1]][!duplicated(files[[1]])]
+Tgo_clean <- files[[2]][!duplicated(files[[2]])]
+files <- list(Trh_clean, Tgo_clean)
+names(files)<- c("Trh ChIP-seq", "Tgo ChIP-seq")
+seqlevels(files[[1]]); seqlevels(files[[2]])
+length(files[[1]]); length(files[[2]])
+```
+
+# Global binding architecture
+
+## Per-chromosome distribution
+
+```{r, include=TRUE, eval=FALSE, 'Per-chromosome distributions Trh vs Tgo binding (percent per chromosome)'}
+# Table 3.1. Per chromosome distribution of Trh and Tgo ChIP-seq peaks (genome version: dm6)
+
+# Ensure seqlevels are identical and ordered
+common_seqs <- intersect(seqlevels(Trh_clean), seqlevels(Tgo_clean))
+Trh <- keepSeqlevels(Trh_clean, common_seqs, pruning.mode = "coarse")
+Tgo <- keepSeqlevels(Tgo_clean, common_seqs, pruning.mode = "coarse")
+trh_chr_counts <- table(seqnames(Trh))
+tgo_chr_counts <- table(seqnames(Tgo))
+trh_chr_percent <- 100 * trh_chr_counts / sum(trh_chr_counts)
+tgo_chr_percent <- 100 * tgo_chr_counts / sum(tgo_chr_counts)
+chr_distribution <- data.frame(
+  chromosome = common_seqs,
+  Trh_percent = as.numeric(trh_chr_percent[common_seqs]),
+  Tgo_percent = as.numeric(tgo_chr_percent[common_seqs])
+); chr_distribution
+library(tidyr)
+chr_distribution_long <- pivot_longer(
+  chr_distribution,
+  cols = c(Trh_percent, Tgo_percent),
+  names_to = "factor",
+  values_to = "percent"
+); chr_distribution_long
+chr_distribution$Trh_Tgo_ratio <-
+  chr_distribution$Trh_percent / chr_distribution$Tgo_percent
+```
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.2 Trh and Tgo ChIP peaks over chromosomes'}
+# Figure 3.2 Trh/Tgo ChIP peaks by chromosome. covplot() facets on chromosome,
+# free y scales, n.breaks = 4; at 1500px/300dpi (6 facets, ~0.8in each) this keeps
+# labels legible, e.g. chr4 gets 0/10/20/30. Scale must be added before as.ggplot() (wraps in annotation_custom); covplot sets fill only, no colour scale.
+cov_y_scale <- scale_y_continuous(n.breaks = 4,
+                                  expand = expansion(mult = c(0, 0.08)))
+
+png(file = file.path(FIGURES_DIR, "fig3_2_A.png"),
+    width = 2000, height = 1200, res = 300)
+covp1 <- ggplotify::as.ggplot(
+  covplot(files[[1]], weightCol = "signalValue",
+          title = "Trh-ChIP peaks over chromosomes",
+          fill_color = PAL_SUBUNIT[["Trh"]]) + cov_y_scale
+)
+covp1
+while(!is.null(dev.list()))
+dev.off()
+
+png(file = file.path(FIGURES_DIR, "fig3_2_B.png"),
+    width = 2000, height = 1200, res = 300)
+covp2 <- ggplotify::as.ggplot(
+  covplot(files[[2]], weightCol = "signalValue",
+          title = "Tgo-ChIP peaks over chromosomes",
+          fill_color = PAL_SUBUNIT[["Tgo"]]) + cov_y_scale
+)
+covp2
+while(!is.null(dev.list()))
+dev.off()
+```
+
+## Binding around transcription start sites (TSS)
+
+```{bash, include=TRUE, eval=FALSE, "Figure 3.2 will be made using DeepTools and bamCompare in bash"}
+# Figure 3.2
+#!/usr/bin/env bash
+# ============================================================
+# VISUALISATION PIPELINE, Trh, Tgo ChIP-seq
+# TSS enrichment profiles and heatmaps
+# Genome: dm6
+# Run in the ChIP-seq processing directory: it reads the blacklist-filtered
+# BAM files in 07_blacklist/ (not in the repository; see 01_chipseq_processing/).
+# ============================================================
+set -euo pipefail
+mkdir -p 05_visualisation/{bigwigs,matrices,plots}
+mkdir -p gene_references
+# ============================================================
+# STAGE 1, INDEX BAMs
+# ============================================================
+# Files downloaded from ENCODE (accessions SRR28099027, SRR28099028, SRR28099029,
+# SRR28102500, SRR28099453, SRR28099454, SRR28100325) are renamed to sample labels.
+for BAM in \
+07_blacklist/TGO_rep1.clean.bam \
+07_blacklist/TGO_rep2.clean.bam \
+07_blacklist/TGO_rep3.clean.bam \
+07_blacklist/TGO_control.clean.bam \
+07_blacklist/TRH_rep1.clean.bam \
+07_blacklist/TRH_rep2.clean.bam \
+07_blacklist/TRH_control.clean.bam
+do
+[ ! -f "${BAM}.bai" ] && samtools index "$BAM"
+done
+# ============================================================
+# STAGE 2, BIGWIG GENERATION
+# ============================================================
+# --- TGO (paired-end) ---
+for REP in 1 2 3
+do
+bamCompare \
+-b1 07_blacklist/TGO_rep${REP}.clean.bam \
+-b2 07_blacklist/TGO_control.clean.bam \
+-o 05_visualisation/bigwigs/TGO_rep${REP}_over_input.bw \
+--binSize 20 \
+--normalizeUsing BPM \
+--scaleFactorsMethod None \
+--smoothLength 60 \
+--centerReads \
+--skipNAs \
+-p 8
+done
+# --- TRH (single-end) ---
+for REP in 1 2
+do
+bamCompare \
+-b1 07_blacklist/TRH_rep${REP}.clean.bam \
+-b2 07_blacklist/TRH_control.clean.bam \
+-o 05_visualisation/bigwigs/TRH_rep${REP}_over_input.bw \
+--binSize 20 \
+--normalizeUsing BPM \
+--scaleFactorsMethod None \
+--smoothLength 60 \
+--extendReads 210 \
+--skipNAs \
+-p 8
+done
+# ============================================================
+# STAGE 3, GENE FILTERING
+# ============================================================
+echo -e "chr2L\nchr2R\nchr3L\nchr3R\nchrX\nchr4" \
+> gene_references/confirmed_chromosomes.txt
+
+awk 'NR==FNR {c[$1]; next} $1 in c' \
+gene_references/confirmed_chromosomes.txt \
+gene_references/dm6.ensGene.gtf \
+> gene_references/filtered.dm6.ensGene.gtf
+
+# ============================================================
+# STAGE 4, COMPUTE MATRICES
+# ============================================================
+computeMatrix reference-point \
+--referencePoint TSS \
+-b 3000 -a 3000 \
+-R gene_references/filtered.dm6.ensGene.gtf \
+-S 05_visualisation/bigwigs/TGO_rep1_over_input.bw \
+05_visualisation/bigwigs/TGO_rep2_over_input.bw \
+05_visualisation/bigwigs/TGO_rep3_over_input.bw \
+05_visualisation/bigwigs/TRH_rep1_over_input.bw \
+05_visualisation/bigwigs/TRH_rep2_over_input.bw \
+--missingDataAsZero \
+--skipZeros \
+-o 05_visualisation/matrices/matrix_TSS_all_TFs_3kb.gz \
+--outFileSortedRegions 05_visualisation/matrices/regions_TSS_all_TFs_3kb.bed \
+-p 8
+
+# --- ZOOM MATRIX ---
+computeMatrix reference-point \
+--referencePoint TSS \
+-b 500 -a 500 \
+-R gene_references/filtered.dm6.ensGene.gtf \
+-S 05_visualisation/bigwigs/TGO_rep1_over_input.bw \
+05_visualisation/bigwigs/TGO_rep2_over_input.bw \
+05_visualisation/bigwigs/TGO_rep3_over_input.bw \
+05_visualisation/bigwigs/TRH_rep1_over_input.bw \
+05_visualisation/bigwigs/TRH_rep2_over_input.bw \
+--missingDataAsZero \
+--skipZeros \
+-o 05_visualisation/matrices/matrix_TSS_all_TFs_500bp.gz \
+--outFileSortedRegions 05_visualisation/matrices/regions_TSS_all_TFs_500bp.bed \
+-p 8
+
+# ============================================================
+# Colours mirror PAL_SUBUNIT via colorspace lighten/darken (deepTools cannot source R); use matrix_TSS_all_TFs_{3kb,500bp}.gz (TGOx3+TRHx2) with --colors to match TF colouring elsewhere.
+# ============================================================
+
+# ============================================================
+# STAGE 5, PROFILE PLOTS (A, B)
+# ============================================================
+
+plotProfile \
+-m 05_visualisation/matrices/matrix_TSS_all_TFs_3kb.gz \
+-o $PROJECT_DIR/results/figures/fig3_3_A.png \
+--perGroup \
+--samplesLabel \
+"Tgo rep1" "Tgo rep2" "Tgo rep3" \
+"Trh rep1" "Trh rep2" \
+--colors '#DDCC77' '#CCBB64' '#BBAA50' '#117733' '#368C4C' \
+--dpi 300
+
+plotProfile \
+-m 05_visualisation/matrices/matrix_TSS_all_TFs_500bp.gz \
+-o $PROJECT_DIR/results/figures/fig3_3_B.png \
+--perGroup \
+--samplesLabel \
+"Tgo rep1" "Tgo rep2" "Tgo rep3" \
+"Trh rep1" "Trh rep2" \
+--colors '#DDCC77' '#CCBB64' '#BBAA50' '#117733' '#368C4C' \
+--dpi 300
+
+# ============================================================
+# STAGE 6, HEATMAP (C)
+# ============================================================
+
+plotHeatmap \
+-m 05_visualisation/matrices/matrix_TSS_all_TFs_3kb.gz \
+-o $PROJECT_DIR/results/figures/fig3_3_C.png \
+--samplesLabel \
+"Tgo rep1" "Tgo rep2" "Tgo rep3" \
+"Trh rep1" "Trh rep2" \
+--whatToShow "heatmap and colorbar" \
+--colorMap RdBu \
+--zMin -1 --zMax 1 \
+--sortRegions descend \
+--sortUsingSamples 1 \
+--heatmapHeight 12 \
+--heatmapWidth 3 \
+--dpi 300 \
+--xAxisLabel "" \
+--refPointLabel "TSS"
+
+# ============================================================
+# OPTIONAL, PEAK-CENTRED ANALYSIS (RECOMMENDED FOR PAPER)
+# ============================================================
+
+computeMatrix reference-point \
+--referencePoint center \
+-b 2000 -a 2000 \
+-R data/final_peaks/TGO_IDR0.05.final.narrowPeak \
+data/final_peaks/TRH_IDR0.05.final.narrowPeak \
+-S 05_visualisation/bigwigs/TGO_rep1_over_input.bw \
+05_visualisation/bigwigs/TGO_rep2_over_input.bw \
+05_visualisation/bigwigs/TGO_rep3_over_input.bw \
+05_visualisation/bigwigs/TRH_rep1_over_input.bw \
+05_visualisation/bigwigs/TRH_rep2_over_input.bw \
+-o 05_visualisation/matrices/matrix_peaks.gz \
+--outFileSortedRegions 05_visualisation/matrices/regions_peaks_centred.bed \
+-p 8
+
+# ============================================================
+echo "=== DONE ==="
+```
+
+# Genomic feature annotation
+
+## Distribution across genomic features
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.4. Distribution of Trh and Tgo TF binding sites relative to the transcription start site (TSS)'}
+#ChIP peak annotation comparision
+peakAnnoList <- lapply(files, annotatePeak, TxDb=txdb,
+                       tssRegion=c(-2000, 2000), verbose=FALSE)
+png(file = file.path(FIGURES_DIR, "fig3_4.png"), width= 2000, height = 1000,  res=300)
+## Override ChIPseeker's internal qualitative palette: the bins are an ORDERED
+## distance progression, so they take a sequential ramp (near-TSS darkest).
+p_dtss <- plotDistToTSS(peakAnnoList)
+print(p_dtss + scale_fill_manual(values = pal_disttotss(p_dtss),
+                                 guide = guide_legend(reverse = TRUE)))
+while(!is.null(dev.list()))
+dev.off()
+```
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.5. Annobar Distribution of Trh and Tgo ChIP-seq reads across annotated genomic features'}
+png(file = file.path(FIGURES_DIR, "fig3_4.png"),  width = 2000, height = 1500, res = 300)
+## Override ChIPseeker's getCols(): it assigns Paired-12 BY LEVEL ORDER, so the
+## same feature can change colour between chapters. pal_feature() pins one colour
+## per feature class and errors loudly on an unrecognised level.
+p_anno <- plotAnnoBar(peakAnnoList)
+print(p_anno + scale_fill_manual(values = pal_feature(p_anno),
+                                 guide = guide_legend(reverse = TRUE)))
+while(!is.null(dev.list()))
+dev.off()
+```
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.6 UpSet Plot Distribution of genomic features within ChIP-peaks'}
+# Figure 3.6A
+peakAnno1 <- annotatePeak(files[[1]], tssRegion=c(-2000, 2000), TxDb=txdb, annoDb="org.Dm.eg.db")
+peakAnno2 <- annotatePeak(files[[2]], tssRegion=c(-2000, 2000), TxDb=txdb, annoDb="org.Dm.eg.db")
+
+# UPSET PLOTS. thesis_upset() is upsetplot() with ONE change: the bars carry
+# genomic-context colour (promoter-containing / genic non-promoter / intergenic).
+# upsetplot() itself cannot do this, it calls geom_bar() with no fill mapping,
+# so every bar comes out the same dark grey.
+
+png(file = file.path(FIGURES_DIR, "fig3_5_A.png"),  width = 2000, height = 1000, res = 210)
+print(thesis_upset(peakAnno1, "Trh ChIP-seq"))
+while(!is.null(dev.list()))
+dev.off()
+
+# Figure 3.6B
+png(file = file.path(FIGURES_DIR, "fig3_5_B.png"),  width = 2000, height = 1000, res = 210)
+print(thesis_upset(peakAnno2, "Tgo ChIP-seq"))
+while(!is.null(dev.list()))
+dev.off()
+```
+
+# Defining the Trh/Tgo heterodimer peak set
+
+```{r, include=TRUE, eval=FALSE }
+# pintersect(Trh_ChIP_peaks, Tgo_ChIP_peaks) and pintersect(Trh_clean, Tgo_clean) both yield 614 peaks: the two paths are equivalent for the Trh/Tgo intersection.
+ovlp <- findOverlaps(Trh_ChIP_peaks, Tgo_ChIP_peaks
+, minoverlap = 1, ignore.strand = TRUE); length(ovlp)
+joint_peaks <- pintersect( # Joint Trh/Tgo binding regions were defined as the genomic intersections of independently called Trh and Tgo ChIP-seq peaks. Only loci where peaks from both datasets physically overlapped were retained, yielding a conservative set of candidate heterodimer binding regions.
+  Trh_ChIP_peaks
+[queryHits(ovlp)],
+  Tgo_ChIP_peaks
+[subjectHits(ovlp)]
+); cat("joint_peaks count:", length(joint_peaks), "\n")
+mcols(joint_peaks) <- mcols(joint_peaks)[, c("signalValue","qValue")]
+```
+
+
+## Overlap and statistical significance
+```{r, include=TRUE, eval=FALSE, 'Figure 3.7a Venn diagram illustrating 614 overlapping genomic coordinates between Trh and Tgo ChIP-seq binding peaks (Trh-Tgo venn diagram overlap)'}
+# Figure 3.7A.
+
+# Venn diagram of the intersection of Trh and Tgo Peaks:
+library(VennDiagram)
+library(extrafont)
+#font_import()
+png(file = file.path(FIGURES_DIR, "fig3_6_A.png"), width = 1500, height = 1000, res = 200)
+draw.pairwise.venn( 
+    area1=length(Trh_clean),
+    area2=length(Tgo_clean), 
+    cross.area=length(joint_peaks), 
+    category=c("Trh ChIP peaks", "Tgo ChIP peaks"), 
+    fill=pal_venn_tgo("Trh"), # '0 degrees' - is at the bottom
+    cex=2,
+    cat.cex=2,
+    cat.pos = c(198, 30), #c(-19, 30)
+    #cat.pos = c(198, 150),
+    cat.dist = c(0.075, 0.04))
+    #cat.dist = 0.06)
+while(!is.null(dev.list()))
+dev.off()
+```
+
+```{r, include=FALSE, eval=FALSE, 'Writing a 614 interval "joint_peaks" object to a BED file'}
+library(GenomicRanges)
+write.table(
+  {joint_bed<- data.frame(
+  chr   = as.character(seqnames(joint_peaks)),
+  start = start(joint_peaks) - 1,   # BED is 0-based
+  end   = end(joint_peaks),
+  name  = paste0("joint_", seq_along(joint_peaks)),
+  score = 0,
+  strand = "*")
+  joint_bed
+  },
+  file = file.path(EXPORT_DIR, "Trh_Tgo_joint_peaks.bed"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = FALSE
+); View(joint_bed)
+```
+
+
+```{r load-perm-overlap-trh-tgo, include=TRUE, eval=TRUE}
+# Loads the pre-computed Trh/Tgo overlap peakPermTest result.
+obj <- readRDS(file.path(EXPORT_DIR, "perm_overlap_trh_tgo.rds"))
+pt2_ <- obj$pt2_
+cat(sprintf('Loaded pt2_ from HPC: observed=%d  null_mean=%.2f  p=%.3e\n',
+            pt2_$cntOverlaps$observed,
+            mean(pt2_$cntOverlaps$permuted),
+            pt2_$cntOverlaps$pval))
+```
+
+```{r load-perm-enhancers-trh-tgo, include=TRUE, eval=TRUE}
+# Loads pre-computed enhancer permutation results (all/promoter/distal).
+obj <- readRDS(file.path(EXPORT_DIR, "perm_enhancers_trh_tgo.rds"))
+pt_all      <- obj$pt_all
+pt_promoter <- obj$pt_promoter
+pt_distal   <- obj$pt_distal
+print(obj$summary, row.names = FALSE)
+```
+
+```{r load-perm-cme, include=TRUE, eval=TRUE}
+# Loads the pre-computed CME positional permTest result.
+obj <- readRDS(file.path(EXPORT_DIR, "perm_cme.rds"))
+pt <- obj$pt
+print(obj$summary, row.names = FALSE)
+```
+
+```{r load-chipenrich-ch3, include=TRUE, eval=TRUE}
+# Loads pre-computed ChIP-Enrich results (six tables).
+obj <- readRDS(file.path(EXPORT_DIR, "chipenrich_ch3.rds"))
+res_custom       <- obj$res_custom
+res_custom_fet   <- obj$res_custom_fet
+res_BP           <- obj$res_BP
+res_MF           <- obj$res_MF
+res_CC           <- obj$res_CC
+res_reactome     <- obj$res_reactome
+res_sig_BP       <- obj$res_sig_BP
+res_sig_MF       <- obj$res_sig_MF
+res_sig_CC       <- obj$res_sig_CC
+res_sig_reactome <- obj$res_sig_reactome
+# tracheal geneset size, recorded in results/reported_values.tsv
+trach_entrez_n   <- obj$trach_entrez_n
+comp_entrez_n    <- obj$comp_entrez_n
+cat(sprintf('Loaded ChIP-Enrich: custom=%d rows | BP=%d (sig=%d) | MF=%d | CC=%d | reactome=%d\n',
+            nrow(res_custom), nrow(res_BP), nrow(res_sig_BP),
+            nrow(res_MF), nrow(res_CC), nrow(res_reactome)))
+```
+
+```{r load-chipenrich-ch3-distalsplit, include=TRUE, eval=TRUE}
+# Loads the promoter-vs-distal diagnostic (translation-artefact test).
+obj_ds <- readRDS(file.path(EXPORT_DIR, "chipenrich_ch3_distalsplit.rds"))
+res_prox_bp_sig   <- obj_ds$res_prox_bp_sig
+res_distal_bp_sig <- obj_ds$res_distal_bp_sig
+n_promoter_ds     <- obj_ds$n_promoter
+n_distal_ds       <- obj_ds$n_distal
+cat(sprintf("Distal split loaded: proximal n=%d (%d sig terms) | distal n=%d (%d sig terms)\n",
+            n_promoter_ds, nrow(res_prox_bp_sig),
+            n_distal_ds,   nrow(res_distal_bp_sig)))
+```
+
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.7b Validating the Trh/Tgo overlap significance using permutation test using peakPermTest'}
+# Figure 3.7B
+# ---- Dependencies ----
+library(regioneR)
+# ---- Run the permutation test ----
+# pt2_ is loaded by the `load-perm-overlap-trh-tgo` chunk earlier in this Rmd
+# ---- Extract components ----
+perm_counts  <- pt2_$cntOverlaps$permuted      # numeric vector, length 5000
+obs_count    <- pt2_$cntOverlaps$observed       # single integer (614)
+pval         <- pt2_$cntOverlaps$pval
+zscore       <- pt2_$cntOverlaps$zscore
+n_perm       <- length(perm_counts)
+# ---- Density of null distribution ----
+null_dens <- density(perm_counts, adjust = 1.2)
+# 95th percentile of null (Ev_perm0.05 threshold)
+ev_perm_95 <- quantile(perm_counts, 0.95)
+
+# ---- Open PNG device ----
+png(
+  file   = file.path(FIGURES_DIR, "fig3_6_B.png"),
+  width  = 3000,
+  height = 1200,
+  res    = 350
+)
+# ---- Layout: two panels side by side ----
+# Left panel: null distribution zoomed in
+# Right panel: observed value alone
+# This avoids forcing both onto one compressed axis
+layout(matrix(c(1, 2), nrow = 1), widths = c(5.5, 1))
+# ---- Panel 1: Null distribution (zoomed) ----
+par(mar = c(4, 4, 2, 0.5))
+null_xlim <- c(0, max(perm_counts) * 1.4)
+plot(
+  null_dens$x, null_dens$y,
+  type  = "n",
+  xlim  = null_xlim,
+  ylim  = c(0, max(null_dens$y) * 1.35),
+  xlab  = "Count of overlaps (permuted)",
+  ylab  = "Density",
+  main  = paste0("Null distribution (", formatC(n_perm, big.mark = ""), " permutations)"),
+  cex.lab  = 1,
+  cex.axis = 1,
+  las   = 1
+)
+# Shade null density
+polygon(
+  c(null_dens$x, rev(null_dens$x)),
+  c(null_dens$y, rep(0, length(null_dens$y))),
+  col    = adjustcolor(PAL_INK[["neutral"]], alpha.f = 0.5),
+  border = NA
+)
+lines(null_dens$x, null_dens$y, col = PAL_INK[["outline"]], lwd = 1.5)
+# 95th percentile line
+abline(v = ev_perm_95, col = PAL_INK[["threshold"]], lwd = 1.5, lty = 2)
+text(
+  x      = ev_perm_95,
+  y      = max(null_dens$y) * 1.25,
+  labels = bquote(Ev[perm]^{0.05} == .(round(ev_perm_95))),
+  col    = PAL_INK[["threshold"]],
+  cex    = 1,
+  pos    = 4   # place label to the right of the line
+)
+# Stats annotation, top-left, not competing with density
+legend(
+  "topright",
+  legend = list(
+    bquote(italic(Z) == .(round(zscore, 2))),
+    bquote(italic(p) == .(formatC(pval, format = "e", digits = 2))),
+    bquote(n[perm] == .(n_perm))
+  ),
+  bty  = "n",
+  cex  = 1
+)
+# ---- Panel 2: Observed value ----
+par(mar = c(4, 0.5, 2, 0))
+plot(
+  0, 0,
+  type = "n",
+  xlim = c(0, 1),
+  ylim = c(0, 1),
+  xaxt = "n", yaxt = "n",
+  xlab = "", ylab = "",
+  main = "Observed",
+  bty  = "n",
+  cex.main = 0.85
+)
+# Draw a single vertical bar representing Ev_obs
+rect(
+  xleft   = 0.3,
+  ybottom = 0.05,
+  xright  = 0.7,
+  ytop    = 0.85,
+  col     = PAL_HETERO[["Trh/Tgo"]],
+  border  = NA
+)
+text(
+  x      = 0.5,
+  y      = 0.93,
+  labels = bquote(Ev[obs] == .(obs_count)),
+  col    = PAL_HETERO[["Trh/Tgo"]],
+  cex    = 1,
+  font   = 2
+)
+while (!is.null(dev.list()))
+dev.off()
+```
+
+The overlap drawn in the Venn diagram (Figure 3.6) can read 690 while the number of overlapping peaks is 655, because a peak may overlap several peaks of the opposing set; the diagram counts each such configuration once, on the coordinates of the larger merged interval. The two lines below compare the two counts (655 and 690):
+
+```{r,include=TRUE, eval=FALSE}
+simple_overlap<-length(findOverlapsOfPeaks(Trh_clean, Tgo_clean)$peaklist$`Trh_clean///Tgo_clean`); simple_overlap
+manual_overlap_of_every_instance <- length(unique(queryHits(findOverlaps(Trh_clean, Tgo_clean)))); manual_overlap_of_every_instance
+```
+
+
+# Functional contextualisation of Trh/Tgo binding
+
+## Enhancer and promoter context
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.7A. Screenshot of overlaps within ±1 kb of TSS'}
+# Overlapping Trh/Tgo binding peaks with known Drosophila enhancers (Co-localisation with late embryonic enhancers (st10-17))
+```
+
+Permutation test for non-random overlap with promoters and enhancers:
+```{r, include=TRUE, eval=FALSE, 'Figure 3.7B. Permutation test to show non-random overlap with promoters and enhancers'}
+enhancers <- read.table(file.path(REFERENCE_LISTS, "merged_embryo_5-20_enhancers_dm6.bed"), header = FALSE, stringsAsFactors = FALSE)
+colnames(enhancers) <- c("seqnames", "start", "end")
+enhancers_gr <- GRanges(
+  seqnames = enhancers$seqnames,
+  ranges   = IRanges(start = enhancers$start, end = enhancers$end)
+)
+# ============================================================
+# Figure 3.7B, Permutation test (RERUN with joint_peaks_filt)
+# Uses the same 614-peak filtered set as all downstream analyses
+# ============================================================
+
+library(GenomicRanges)
+library(regioneR)
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+
+# joint_peaks_filt should already exist (614 peaks, standard chromosomes)
+# enhancers_gr should already exist from the enhancer bed file load
+# If not, recreate:
+standard_chrs <- c("chr2L","chr2R","chr3L","chr3R","chr4","chrX")
+joint_peaks_filt <- keepSeqlevels(joint_peaks, standard_chrs, pruning.mode="coarse")
+enhancers_filt <- keepSeqlevels(
+  enhancers_gr,
+  c("chr2L","chr2R","chr3L","chr3R","chr4","chrX"),
+  pruning.mode = "coarse"
+)
+
+# Quick sanity check
+cat("Peaks in analysis set:     ", length(joint_peaks_filt), "\n")
+cat("Observed enhancer overlaps:", sum(countOverlaps(
+  joint_peaks_filt, enhancers_filt, ignore.strand = TRUE) > 0), "\n")
+
+# --- Promoter / distal split using the same TSS method as Fig 3_11 -----------
+# Use 1-bp TSS points (consistent with distanceToTSS already on joint_peaks_filt)
+# If $distanceToTSS is already annotated, use it directly:
+
+if (!"distanceToTSS" %in% names(mcols(joint_peaks_filt))) {
+  txdb   <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+  txs    <- transcripts(txdb)
+  tss_pt <- resize(txs, width = 1, fix = "start")
+  ov_tss <- distanceToNearest(joint_peaks_filt, tss_pt)
+  joint_peaks_filt$distanceToTSS <- mcols(ov_tss)$distance
+}
+promoter_peaks <- joint_peaks_filt[joint_peaks_filt$distanceToTSS <= 1000]
+distal_peaks   <- joint_peaks_filt[joint_peaks_filt$distanceToTSS >  1000]
+
+cat("Promoter peaks (≤1 kb):", length(promoter_peaks), "\n")
+cat("Distal peaks   (>1 kb):", length(distal_peaks),   "\n")
+
+# ============================================================
+# Permutation tests - no masks are used, which is the more conservative approach
+# ntimes = 5000 throughout; empirical p floor = 1/5001
+# ============================================================
+options(mc.cores = 1)
+# --- All 614 peaks vs enhancers ----------------------------------------------
+set.seed(777)
+pt0 <- proc.time()
+# pt_all is loaded by the `load-perm-enhancers-trh-tgo` chunk earlier in this Rmd
+cat("pt_all done:", (proc.time() - pt0)["elapsed"], "sec\n")
+
+# --- Promoter subset vs enhancers --------------------------------------------
+set.seed(777)
+pt0 <- proc.time()
+# pt_promoter is loaded by the `load-perm-enhancers-trh-tgo` chunk earlier in this Rmd
+cat("pt_promoter done:", (proc.time() - pt0)["elapsed"], "sec\n")
+
+# --- Distal subset vs enhancers ----------------------------------------------
+set.seed(777)
+pt0 <- proc.time()
+# pt_distal is loaded by the `load-perm-enhancers-trh-tgo` chunk earlier in this Rmd
+cat("pt_distal done:", (proc.time() - pt0)["elapsed"], "sec\n")
+
+# ============================================================
+# Extract and display results
+# ============================================================
+
+extract_perm_stats <- function(perm, label) {
+  obs  <- perm$numOverlaps$observed
+  perm_vals <- perm$numOverlaps$permuted
+  data.frame(
+    Context   = label,
+    Observed  = obs,
+    Null_mean = round(mean(perm_vals), 2),
+    Null_SD   = round(sd(perm_vals),   2),
+    Z_score   = round((obs - mean(perm_vals)) / sd(perm_vals), 2),
+    p_emp     = perm$numOverlaps$pval,
+    N_perm    = length(perm_vals),
+    stringsAsFactors = FALSE
+  )
+}
+
+perm_results_table <- rbind(
+  extract_perm_stats(pt_all,      "All Trh/Tgo peaks (n=614)"),
+  extract_perm_stats(pt_promoter, "Promoter-proximal (≤1 kb)"),
+  extract_perm_stats(pt_distal,   "Distal (>1 kb)")
+)
+
+print(perm_results_table, row.names = FALSE)
+
+# Save results table for export
+write.csv(perm_results_table,
+          file      = file.path(EXPORT_DIR, "perm_results_table_filt.csv"),
+          row.names = FALSE,
+          quote     = FALSE)
+```
+
+
+## Construction of a tissue-relevant reference gene set: trh-coexpression dataset
+
+## Nearest-gene context and GO enrichment near Trh/Tgo peaks
+```{r, include=TRUE, eval=FALSE, 'Figure 3.10 Venn diagram and Gene Ontology enrichment of TS and SG genes near 614 peaks'}
+# ------------------------------------------------------------
+# FIGURE 3.9, Trh/Tgo peak proximity analysis, hypergeometric & permutation
+# Logic: 614 Trh/Tgo peaks -> genes with TSS within 1 kb -> overlap with
+#        TS/SG reference list -> statistical tests
+# ------------------------------------------------------------
+
+# ---- 0. Libraries ----
+library(GenomicRanges)
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+library(org.Dm.eg.db)
+library(AnnotationDbi)
+library(regioneR)
+library(VennDiagram)
+setwd(file.path(PROJECT_DIR, ""))
+txdb          <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+standard_chrs <- c("chr2L","chr2R","chr3L","chr3R","chr4","chrX")
+
+# ---- 1. Filter peaks to standard chromosomes ----
+# joint_peaks is the pre-existing 614-peak GRanges object
+joint_peaks_filt <- keepSeqlevels(
+  joint_peaks,
+  standard_chrs,
+  pruning.mode = "coarse"
+)
+stopifnot(length(joint_peaks_filt) == 614)
+cat("Peaks after chromosome filtering:", length(joint_peaks_filt), "\n")
+
+# ---- 2. Build single-base TSS coordinates ----
+# promoters(upstream=0, downstream=1) gives width-1 ranges exactly at the TSS.
+# This avoids the double-window inflation caused by using upstream=1000 as a
+# range and then applying a 1 kb distance filter on top of it.
+
+tss_gr <- promoters(
+  genes(txdb),
+  upstream   = 0,
+  downstream = 1
+)
+tss_gr <- keepSeqlevels(tss_gr, standard_chrs, pruning.mode = "coarse")
+tss_gr <- trim(tss_gr)
+
+# Step 1: get all mappings as a list to identify ambiguous Ensembl IDs
+flybase_list <- mapIds(
+  org.Dm.eg.db,
+  keys      = names(tss_gr),
+  keytype   = "ENSEMBL",
+  column    = "FLYBASE",
+  multiVals = "list"
+)
+
+# Step 2: identify ambiguous entries (more than one FlyBase ID per Ensembl ID)
+ambiguous <- lengths(flybase_list) > 1
+cat("Ensembl IDs with ambiguous FlyBase mapping:", sum(ambiguous), "\n")
+
+# Step 3: assign first value for all, then NA-mask the ambiguous ones
+flybase_vec <- mapIds(
+  org.Dm.eg.db,
+  keys      = names(tss_gr),
+  keytype   = "ENSEMBL",
+  column    = "FLYBASE",
+  multiVals = "first"
+)
+flybase_vec[ambiguous] <- NA   # conservative: treat ambiguous as unmapped
+
+# Step 4: assign to GRanges
+tss_gr$flybase <- flybase_vec
+
+# Diagnostic
+cat("TSSs with FlyBase ID:   ", sum(!is.na(tss_gr$flybase)), "\n")
+cat("TSSs without FlyBase ID:", sum( is.na(tss_gr$flybase)), "\n")
+
+# ---- 3. Load TS/SG reference gene list ----
+ts_sg_genes <- unique(na.omit(
+  read.csv(file.path(REFERENCE_LISTS, "trh_ts_sg_tissues_reference.csv"),
+           stringsAsFactors = FALSE)$genes
+))
+cat("TS/SG reference genes:", length(ts_sg_genes), "\n")   # expect 2053
+#######
+
+# Checks for loss of gene identifiers during mapping between annotation systems
+cat("=== Identifier loss check ===\n")
+# Step 1: FBgn -> Entrez (used by ChIP-Enrich)
+fbgn_to_entrez <- mapIds(org.Dm.eg.db,
+  keys = ts_sg_genes, keytype = "FLYBASE",
+  column = "ENTREZID", multiVals = "first")
+cat("FBgn → Entrez: ", sum(!is.na(fbgn_to_entrez)), 
+    "mapped,", sum(is.na(fbgn_to_entrez)), "lost\n")
+# Step 2: FBgn -> Ensembl (used by gene length test)
+fbgn_to_ensembl <- mapIds(org.Dm.eg.db,
+  keys = ts_sg_genes, keytype = "FLYBASE",
+  column = "ENSEMBL", multiVals = "first")
+cat("FBgn → Ensembl:", sum(!is.na(fbgn_to_ensembl)),
+    "mapped,", sum(is.na(fbgn_to_ensembl)), "lost\n")
+
+# Step 3: are the unmapped genes the same across conversions?
+lost_to_entrez  <- ts_sg_genes[is.na(fbgn_to_entrez)]
+lost_to_ensembl <- ts_sg_genes[is.na(fbgn_to_ensembl)]
+cat("Shared unmapped (lost in both):", 
+    length(intersect(lost_to_entrez, lost_to_ensembl)), "\n")
+cat("Lost only to Entrez:", 
+    length(setdiff(lost_to_entrez, lost_to_ensembl)), "\n")
+cat("Lost only to Ensembl:", 
+    length(setdiff(lost_to_ensembl, lost_to_entrez)), "\n")
+######
+
+
+# ---- 4. Find all genes with a TSS within 1 kb of any Trh/Tgo peak ----
+# findOverlaps with maxgap=1000 captures every peak-TSS pair within 1 kb.
+# A peak near two genes contributes both genes, this is biologically correct
+# for a promoter-proximal transcription factor like Trh/Tgo.
+peak_tss_hits <- findOverlaps(
+  joint_peaks_filt,
+  tss_gr,
+  maxgap = 1000L,
+  ignore.strand = TRUE
+)
+
+# Extract unique FlyBase IDs of all genes near any peak
+nearby_flybase <- unique(na.omit(
+  tss_gr$flybase[subjectHits(peak_tss_hits)]
+))
+cat("Unique genes within 1 kb of a peak:", length(nearby_flybase), "\n")
+
+# ---- 5. Overlap with TS/SG reference list ----
+overlap_genes <- intersect(nearby_flybase, ts_sg_genes)
+cat("Overlap (peak-proximal ∩ TS/SG expressed):", length(overlap_genes), "\n")
+print(overlap_genes)
+
+# Save overlap gene list for GO enrichment and the supplementary table
+write.csv(
+  data.frame(FlyBase_ID = overlap_genes),
+  file      = file.path(EXPORT_DIR, "trh_tgo_peaks_vs_ts_sg_overlap_genes.csv"),
+  row.names = FALSE,
+  quote     = FALSE
+)
+
+# ---- 6. Venn diagram ----
+png(file.path(FIGURES_DIR, "fig3_10_A_clean.png"),
+    width = 1800, height = 1600, res = 400)
+
+VennDiagram::draw.pairwise.venn(
+  area1      = length(ts_sg_genes),       # 2053
+  area2      = length(nearby_flybase),    # genes near peaks
+  cross.area = length(overlap_genes),     # intersection
+  category   = c(
+    "Genes expressed in tracheal\nsystem and salivary gland",
+    paste0("Gene TSSs within\n±1 kb of ",
+           length(joint_peaks_filt),
+           " Trh/Tgo\nheterodimer peaks")
+  ),
+  fill    = rev(pal_venn_tissue("Trh/Tgo", "Tracheal+SG")),
+  alpha   = rep(PAL_VENN_ALPHA, 2),
+  col     = rep(PAL_INK[["outline"]], 2),
+  cex     = 1.1,
+  cat.cex = 1.1,
+  cat.col = rep(PAL_INK[["annotation"]], 2),
+  cat.pos = c(-15, 163),
+  cat.dist = c(0.06, 0.1),
+  margin  = 0.1
+)
+while (!is.null(dev.list())) dev.off()
+
+# ---- 7. Hypergeometric test ----
+# N: all annotated Drosophila genes (background universe)
+# A: genes near Trh/Tgo peaks (draws from urn)
+# B: TS/SG reference genes (successes in urn)
+# k: observed overlap (successes drawn)
+N <- length(keys(org.Dm.eg.db, keytype = "FLYBASE"))
+A <- length(nearby_flybase)
+B <- length(ts_sg_genes)
+k <- length(overlap_genes)
+
+p_hyper  <- phyper(k - 1, m = B, n = N - B, k = A, lower.tail = FALSE)
+expected <- A * (B / N)
+fold_enr <- k / expected
+
+cat(sprintf(
+  "\nHypergeometric test\nN=%d  A=%d  B=%d  k=%d\nExpected=%.2f  Fold enrichment=%.2f  p=%.3e\n",
+  N, A, B, k, expected, fold_enr, p_hyper
+))
+
+# ---- 8. Permutation test ----
+# Label each TSS as TS/SG or not, then pass only the TS/SG subset to the
+# evaluation function to avoid carrying the full tss_gr through forked workers.
+tss_gr$is_ts_sg <- (!is.na(tss_gr$flybase)) & (tss_gr$flybase %in% ts_sg_genes)
+tss_ts_sg       <- tss_gr[tss_gr$is_ts_sg == TRUE]
+cat("TS/SG TSSs for permutation:", length(tss_ts_sg), "\n")
+
+# Evaluation function:
+# counts unique TS/SG genes with a TSS within 1 kb of the (randomised) peaks.
+# The ... absorbs per.chromosome and genome passed by permTest internally.
+perm_eval <- function(A, B, ..., tss_ts_sg) {
+  if (length(tss_ts_sg) == 0L) return(0L)
+  hits <- findOverlaps(A, tss_ts_sg, maxgap = 1000L, ignore.strand = TRUE)
+  length(unique(subjectHits(hits)))
+}
+
+options(mc.cores = 1)   # avoids mclapply serialisation failures
+set.seed(777)
+
+# pt (CME perm) is loaded by the `load-perm-cme` chunk earlier in this Rmd
+
+# ---- 9. Permutation results table ----
+obs  <- pt$perm_eval$observed
+null <- pt$perm_eval$permuted
+
+tbl_perm <- data.frame(
+  Context        = "Trh/Tgo peaks within 1 kb of TS/SG TSS",
+  Observed       = obs,
+  Null_mean      = round(mean(null), 2),
+  Null_SD        = round(sd(null),   2),
+  Z_score        = round((obs - mean(null)) / sd(null), 3),
+  p_empirical    = mean(null >= obs),
+  N_permutations = length(null)
+)
+print(tbl_perm)
+# p < 0.0002
+```
+
+## enrichGO on the 75 tracheal/salivary-gland genes near peaks (not reported)
+```{r, include=TRUE, eval=FALSE, 'Figure3.9b Gene Ontology enrichment of genes near peaks'}
+# Figure3.9b Gene Ontology enrichment of 75 (TS and SG) genes near 614 peaks
+png(file = file.path(FIGURES_DIR, "fig3_9B.png"), width = 1500, height = 1000, res = 210)
+ego <- enrichGO(gene = overlap_genes, OrgDb = org.Dm.eg.db, keyType = "FLYBASE", ont = "ALL", pAdjustMethod = "BH")
+dotplot(ego)
+while(!is.null(dev.list()))
+dev.off()
+```
+
+## Gene-length bias of the tracheal/salivary-gland gene set
+```{r, include=TRUE, eval=FALSE}
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+gene_lengths <- width(genes(TxDb.Dmelanogaster.UCSC.dm6.ensGene))
+ts_sg_ensembl <- mapIds(
+  org.Dm.eg.db,
+  keys     = ts_sg_genes,
+  keytype  = "FLYBASE",
+  column   = "ENSEMBL",
+  multiVals = "first"
+)
+ts_sg_ensembl <- na.omit(ts_sg_ensembl)
+all_gene_names <- names(genes(TxDb.Dmelanogaster.UCSC.dm6.ensGene))
+
+ts_sg_lengths  <- gene_lengths[all_gene_names %in% ts_sg_ensembl]
+other_lengths   <- gene_lengths[!all_gene_names %in% ts_sg_ensembl]
+
+cat("Median TS/SG gene length:  ", median(ts_sg_lengths), "\n")# Median TS/SG gene length:   4685
+
+cat("Median other gene length:  ", median(other_lengths), "\n")# Median other gene length:   1512
+
+wilcox.test(ts_sg_lengths, other_lengths)
+# Wilcoxon rank sum test with continuity correction
+# data:  ts_sg_lengths and other_lengths
+# W = 24279486, p-value < 2.2e-16
+# alternative hypothesis: true location shift is not equal to 0
+```
+TS/SG genes are significantly longer than background genes, so the hypergeometric p-value is inflated; the enrichment claim therefore rests on ChIP-Enrich, which corrects for locus length.
+
+## Quantitative enrichment near tracheal loci
+```{r, include=TRUE, eval=FALSE, 'Table 3.2 Gene length and total locus size adjusted enrichment'}
+# ============================================================
+# ChIP-Enrich analysis, complete script in execution order
+# Section 3.5.4 (main text) + Appendix robustness table
+# All uses joint_peaks_filt (614 peaks, standard chromosomes)
+# ============================================================
+suppressPackageStartupMessages({
+  library(chipenrich)
+  library(org.Dm.eg.db)
+  library(AnnotationDbi)
+  library(readr)
+  library(dplyr)
+  library(GenomicRanges)
+  library(stringr)
+  library(ggplot2)
+})
+# ============================================================
+# 0. Build peaks_df
+# ============================================================
+peaks_df <- data.frame(
+  chr   = as.character(seqnames(joint_peaks_filt)),
+  start = start(joint_peaks_filt),
+  end   = end(joint_peaks_filt),
+  stringsAsFactors = FALSE
+)
+cat("Peaks in analysis:", nrow(peaks_df), "\n")
+# ============================================================
+# PART A, MAIN TEXT (Section 3.5.4 + Table 3.2)
+# ============================================================
+# --- A1. Build custom tracheal geneset ---------------------------------------
+all_dm6 <- unique(as.character(keys(org.Dm.eg.db, keytype = "ENTREZID")))
+read_fbgn <- function(path) {
+  df <- if (grepl("\\.csv$", path, ignore.case = TRUE))
+    suppressMessages(readr::read_csv(path, show_col_types = FALSE))
+  else
+    suppressMessages(readr::read_tsv(path, show_col_types = FALSE))
+  v <- if ("genes" %in% names(df)) df[["genes"]] else df[[1]]
+  v <- unique(trimws(as.character(v)))
+  v[grepl("^FBgn\\d+$", v)]
+}
+map_fbgn_to_entrez <- function(fbgn_vec) {
+  if (length(fbgn_vec) == 0) return(character(0))
+  m <- AnnotationDbi::select(org.Dm.eg.db,
+                             keys    = fbgn_vec,
+                             keytype = "FLYBASE",
+                             columns = "ENTREZID")
+  m <- dplyr::filter(m, !is.na(ENTREZID)) |> dplyr::distinct(ENTREZID)
+  as.character(m$ENTREZID)
+}
+tracheal_file <- file.path(REFERENCE_LISTS, "trh_ts_sg_tissues_reference.csv")
+trach_fbgn    <- read_fbgn(tracheal_file)
+trach_entrez  <- map_fbgn_to_entrez(trach_fbgn)
+trach_entrez  <- intersect(trach_entrez, all_dm6)
+comp_entrez   <- setdiff(all_dm6, trach_entrez)
+stopifnot(length(intersect(trach_entrez, comp_entrez)) == 0)
+# Print geneset sizes: tracheal genes and complement genes
+cat("Tracheal geneset size:", length(trach_entrez), "Entrez IDs\n")
+cat("Complement geneset size:", length(comp_entrez), "Entrez IDs\n")
+genesets_file <- file.path(EXPORT_DIR, "geneset_tracheal_vs_complement.tsv")
+custom_gs <- bind_rows(
+  tibble(geneset = "tracheal_custom",        gene_id = trach_entrez),
+  tibble(geneset = "All_dm6_minus_tracheal", gene_id = comp_entrez)
+)
+readr::write_delim(custom_gs, genesets_file, delim = "\t", col_names = FALSE)
+# --- A2. PRIMARY ANALYSIS, logistic regression (main text, Table 3.2) -------
+
+# res_custom is loaded by the `load-chipenrich-ch3` chunk earlier in this Rmd
+
+cat("\n===== TABLE 3.2 NUMBERS (main text) =====\n")
+print(res_custom[, c("Description", "Odds.Ratio", "P.value", "FDR",
+                     "N.Geneset.Peak.Genes")])
+# or = 2.27, p = 8.93e-9 for tracheal_custom, reported in Table 3.2
+# or = 0.44, p = 8.93e-9 for complement, reported in Table 3.2
+# FDR equals the p-value because only 2 terms are tested (BH correction of 2 identical values)
+
+# ============================================================
+# PART B, APPENDIX (robustness check, Fisher exact test)
+# ============================================================
+# --- B1. Fisher exact test (no locus-length correction) ----------------------
+# res_custom_fet is loaded by the `load-chipenrich-ch3` chunk earlier in this Rmd
+# A warning about locusdef may appear here; the analysis uses a 1kb locus definition
+# --- B2. Build Appendix comparison table -------------------------------------
+robustness_df <- data.frame(
+  Method     = c("ChIP-Enrich (logistic regression, locus-length corrected)",
+                 "Fisher exact test (count-based, no locus-length correction)"),
+  Odds_Ratio = c(
+    res_custom[res_custom$Description == "tracheal_custom", "Odds.Ratio"],
+    res_custom_fet[res_custom_fet$Description == "tracheal_custom", "Odds.Ratio"]
+  ),
+  P_value    = c(
+    res_custom[res_custom$Description == "tracheal_custom", "P.value"],
+    res_custom_fet[res_custom_fet$Description == "tracheal_custom", "P.value"]
+  ),
+  stringsAsFactors = FALSE
+)
+robustness_df$Significant <- ifelse(robustness_df$P_value < 0.05, "Yes", "No")
+
+cat("\n===== APPENDIX TABLE: ROBUSTNESS CHECK =====\n")
+print(robustness_df, row.names = FALSE)
+
+all_enriched <- all(robustness_df$Odds_Ratio > 1)
+all_sig      <- all(robustness_df$P_value < 0.05) 
+
+if (all_enriched & all_sig) {
+  cat("\nCONCLUSION: Both methods agree — enrichment is significant and",
+      "consistent. Robustness sentence in main text is justified.\n")
+} else {
+  cat("\nWARNING: Methods disagree. Review before keeping robustness sentence.\n")
+}
+
+write.csv(robustness_df,
+          file.path(EXPORT_DIR, "chipenrich_robustness_comparison.csv"),
+          row.names = FALSE, quote = FALSE)
+cat("Saved: chipenrich_robustness_comparison.csv\n")
+# ============================================================
+# PART C, MAIN TEXT (Figure 3.11 dot plots, GO and Reactome enrichment)
+# ============================================================
+# Shared dot plot function
+plot_chipenrich_dotplot <- function(res_sig, title_str, outfile,
+                                    dpi = 400,
+                                    max_terms = 20,
+                                    base_height_per_term = 120,   # was 120
+                                    min_height = 900,            # was 900
+                                    max_height = 2400,            # was 2400
+                                    width = 2400,
+                                    fdr_cut = 0.05) {  # FDR cut res_sig was
+                                                       # filtered at; sets the
+                                                       # colourbar's natural axis
+  if (nrow(res_sig) == 0) {
+    message("No significant terms for: ", title_str, " — skipping plot")
+    return(invisible(NULL))
+  }
+  res_plot <- head(res_sig, max_terms)
+  res_plot$Description <- str_wrap(res_plot$Description, width = 45)  # was 45
+  res_plot$Description <- factor(res_plot$Description,
+                                 levels = rev(res_plot$Description))
+  n_terms   <- nrow(res_plot)
+  n_lines   <- sum(vapply(strsplit(as.character(res_plot$Description), "\n"),
+                          length, integer(1)))
+
+  few_terms <- n_terms <= 8
+  base_size <- if (n_terms <= 8) 11 else if (n_terms <= 15) 10 else 9
+
+  # ---- ADD THESE TWO LINES ----
+  legend_pad <- if (few_terms) 350 else 0
+  height     <- min(max(n_lines * base_height_per_term, min_height) + legend_pad,
+                    max_height)
+  
+  p <- ggplot(res_plot,
+              aes(x = log2(Odds.Ratio), y = Description,
+                  fill = FDR, size = N.Geneset.Peak.Genes)) +
+    geom_point_seq() +
+    # FDR: low end is interesting, rev = FALSE puts dark at low FDR.
+    # values/domain fix colourbar range to [0, fdr_cut] (res_sig filtered at FDR < fdr_cut); avoids flat bar when all sig terms share one FDR (GOMF n=1; Reactome n=10, FDR=0.00696).
+    # n.breaks = 3, default six tick labels overprint on the 3 cm bar.
+    scale_fill_seq(values = res_plot$FDR, domain = c(0, fdr_cut),
+                     n.breaks = 3, name = "FDR") +
+    scale_size_continuous(name = "Peak-associated genes (n)", range = c(2, 6)) +
+    geom_vline(xintercept = 0, linetype = "dashed",
+               colour = PAL_INK[["annotation"]]) +
+    scale_y_discrete(expand = expansion(add = 0.8)) +
+    labs(x = expression(log[2]~"(Odds ratio)"), y = NULL) +
+    theme_bw(base_size = base_size)
+
+  if (few_terms) {
+    p <- p +
+      theme(plot.title = element_blank(), plot.subtitle = element_blank(),
+            plot.margin = margin(t = 12, r = 10, b = 12, l = 8),
+            legend.position  = "bottom",
+            legend.box       = "horizontal",
+            legend.key.height = unit(0.30, "cm"),
+            legend.key.width  = unit(0.30, "cm"),
+            legend.title = element_text(size = rel(0.8)),
+            legend.text  = element_text(size = rel(0.72))) +
+      guides(
+        colour = guide_colourbar(barwidth = unit(3, "cm"),
+                                 barheight = unit(0.35, "cm"),
+                                 title.position = "top"),
+        size   = guide_legend(nrow = 1, override.aes = list(colour = PAL_INK[["outline"]]),
+                              title.position = "top")
+      )
+  } else {
+    p <- p +
+      theme(plot.title = element_blank(), plot.subtitle = element_blank(),
+            plot.margin = margin(t = 14, r = 8, b = 10, l = 8),
+            legend.position = "right",
+            legend.key.height = unit(0.35, "cm"),
+            legend.key.width  = unit(0.35, "cm"),
+            legend.title = element_text(size = rel(0.8)),
+            legend.text  = element_text(size = rel(0.75)),
+            legend.spacing.y = unit(0.15, "cm")) +
+      guides(
+        colour = guide_colourbar(barheight = unit(2.5, "cm"),
+                                 barwidth  = unit(0.4, "cm")),
+        size   = guide_legend(override.aes = list(colour = PAL_INK[["outline"]]))
+      )
+  }
+  png(file.path(FIGURES_DIR, outfile),
+      width = width, height = height, res = dpi)
+  print(p)
+  while (!is.null(dev.list())) dev.off()
+  message(sprintf("Saved: %s [%d x %d px @ %d dpi, %d terms, %d label-lines]",
+                  outfile, width, height, dpi, n_terms, n_lines))
+}
+# ---- GO Biological Process -----------------------------------------------
+# res_BP is loaded by the `load-chipenrich-ch3` chunk earlier in this Rmd
+print(res_sig_BP[, c("Description","Odds.Ratio","P.value","FDR","N.Geneset.Peak.Genes")])
+plot_chipenrich_dotplot(res_sig_BP, "GO Biological Process enrichment near Trh/Tgo peaks",
+                        "fig3_11_chipenrich_GOBP.png")
+
+# --- GO Molecular Function -----------------------------------------------
+# res_MF is loaded by the `load-chipenrich-ch3` chunk earlier in this Rmd
+print(res_sig_MF[, c("Description","Odds.Ratio","P.value","FDR","N.Geneset.Peak.Genes")])
+plot_chipenrich_dotplot(res_sig_MF, "GO Molecular Function enrichment near Trh/Tgo peaks",
+                        "figD_1_chipenrich_GOMF.png")
+# --- 3. GO Cellular Component -----------------------------------------------
+# res_CC is loaded by the `load-chipenrich-ch3` chunk earlier in this Rmd
+print(res_sig_CC[, c("Description","Odds.Ratio","P.value","FDR","N.Geneset.Peak.Genes")])
+plot_chipenrich_dotplot(res_sig_CC, "GO Cellular Component enrichment near Trh/Tgo peaks",
+                        "fig3_12_chipenrich_GOCC.png")
+# ---- Reactome ---------------------------------------------------------
+# res_reactome is loaded by the `load-chipenrich-ch3` chunk earlier in this Rmd
+print(res_sig_reactome[, c("Description","Odds.Ratio","P.value","FDR","N.Geneset.Peak.Genes")])
+plot_chipenrich_dotplot(res_sig_reactome, "Reactome pathway enrichment near Trh/Tgo peaks",
+                        "fig3_13_chipenrich_reactome.png")
+```
+
+# Motif architecture within Trh/Tgo-bound regions
+
+## Definition of regulatory context and CME stratification
+
+```{r, include=TRUE, eval=FALSE, 'regulatory-classification-nearest-TSS'}
+# Regulatory annotation
+library(GenomicRanges)
+library(dplyr)
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+txdb <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+# 1-bp TSS points (strand-aware)
+txs    <- transcripts(txdb)
+tss_pt <- resize(txs, width = 1, fix = "start")
+# Distance to nearest TSS *point*
+joint_peaks_filt <- keepSeqlevels(
+  joint_peaks_filt,   # use the 614-peak object explicitly
+  c("chr2L","chr2R","chr3L","chr3R","chr4","chrX"),
+  pruning.mode = "coarse"
+)
+#stopifnot(length(joint_peaks_filt) == 614)
+ov_tss <- distanceToNearest(joint_peaks_filt, tss_pt)
+joint_peaks_filt$distanceToTSS <- mcols(ov_tss)$distance
+# Enhancer overlap
+enhancers <- read.table(
+  file.path(REFERENCE_LISTS, "merged_embryo_5-20_enhancers_dm6.bed"),
+  header = FALSE,
+  stringsAsFactors = FALSE
+)
+colnames(enhancers) <- c("seqnames", "start", "end")
+enhancers_gr <- GRanges(
+  seqnames = enhancers$seqnames,
+  ranges   = IRanges(start = enhancers$start, end = enhancers$end)
+)
+joint_peaks_filt$overlaps_enhancer <-
+  countOverlaps(joint_peaks_filt, enhancers_gr, ignore.strand = TRUE) > 0
+# Regulatory class (canonical)
+joint_peaks_filt$Regulatory_Class <- case_when(
+  joint_peaks_filt$distanceToTSS <= 1000 & joint_peaks_filt$overlaps_enhancer ~
+    "Promoter-proximal enhancer (annotated)",
+  joint_peaks_filt$distanceToTSS <= 1000 ~
+    "Promoter-proximal peak (non-annotated)",
+  joint_peaks_filt$distanceToTSS > 1000 & joint_peaks_filt$overlaps_enhancer ~
+    "Distal enhancer (annotated)",
+  TRUE ~
+    "Distal peak (non-annotated)"
+)
+# Summary table
+# dplyr::count() is qualified explicitly because matrixStats::count() can mask
+# the dplyr version when a package that Depends on SummarizedExperiment (such as
+# DiffBind or chipenrich) is attached; matrixStats is pulled in transitively via
+# MatrixGenerics/SummarizedExperiment/DelayedArray. Qualifying the call makes the
+# chunk independent of attach order, consistent with dplyr::filter being qualified
+# further down this chapter.
+summary_df <- as.data.frame(joint_peaks_filt) %>%
+  dplyr::count(Regulatory_Class) %>%
+  dplyr::mutate(
+    Fraction = n / sum(n),
+    Percent  = 100 * Fraction
+  ); summary_df
+## Recode for plotting (same logic as §3.4.1)
+bar_df_35 <- summary_df %>%
+  dplyr::filter(Regulatory_Class %in% c(
+    "Promoter-proximal peak (non-annotated)",
+    "Promoter-proximal enhancer (annotated)",
+    "Distal enhancer (annotated)",
+    "Distal peak (non-annotated)"
+  )) %>%
+  dplyr::mutate(
+    Category = dplyr::recode(
+      Regulatory_Class,
+      "Promoter-proximal peak (non-annotated)"  = "Promoter (≤1 kb, nearest TSS)",
+      "Promoter-proximal enhancer (annotated)"  = "Promoter + enhancer overlap",
+      "Distal enhancer (annotated)"             = "Distal enhancer",
+      "Distal peak (non-annotated)"             = "Distal peak"
+    ),
+    Regulatory_Domain = ifelse(
+      Category %in% c(
+        "Promoter (≤1 kb, nearest TSS)",
+        "Promoter + enhancer overlap"
+      ),
+      "Promoter-proximal",
+      "Distal"
+    )
+  )
+#---------------------------- Plotting Figure 3.12 -----------------------------
+rc <- table(joint_peaks_filt$Regulatory_Class)
+lv311 <- c("Distal enhancer\n(annotated)", "Distal peak\n(non-annotated)",
+           "Promoter\n(\u22641 kb, nearest TSS)", "Promoter + enhancer\noverlap")
+df311 <- data.frame(
+  Context = factor(lv311, levels = lv311),
+  Panel   = factor(c("Distal","Distal","Promoter-proximal","Promoter-proximal"),
+                   levels = c("Distal","Promoter-proximal")),
+  n       = c(as.integer(rc["Distal enhancer (annotated)"]),
+              as.integer(rc["Distal peak (non-annotated)"]),
+              as.integer(rc["Promoter-proximal peak (non-annotated)"]),
+              as.integer(rc["Promoter-proximal enhancer (annotated)"])),
+  stringsAsFactors = FALSE
+)
+df311$Pct   <- 100 * df311$n / length(joint_peaks_filt)   # denominator = 614
+df311$Count <- sprintf("n = %d", df311$n)
+fills311 <- pal_context(c("distal_enh","distal_unann","prox_peak","prox_enh"))
+names(fills311) <- lv311
+p311 <- thesis_bar(df311, x = "Context", y = "Pct", fill = "Context",
+                   value_fmt = "%.1f%%", count = "Count", facet = "Panel",
+                   fills = fills311, y_max = 78,
+                   y_lab = "Percentage of Trh/Tgo peaks (%)")
+ggsave(file.path(FIGURES_DIR, "fig3_7.png"), p311,
+       width = 8, height = 4.3, dpi = 300, bg = "white")
+```
+
+## Adding CME and Distance to TSS to joint_peaks_filt
+```{r, include=TRUE, eval=FALSE, fig-cme-strength, fig.cap="Figure 3.13. Occurrence of the canonical CNS midline element (CME)"}
+# fig3_13.png, CME vs Trh/Tgo binding strength (Figure 3.13 in the text)
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+library(Biostrings)
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+# --- Canonical CME definition (E-box ACGTG), scanned on both strands ----------
+# CME presence = a match to ACGTG (plus) or its reverse complement CACGT
+# (minus) on the FILTERED joint peak set. This is the single canonical CME
+# definition used throughout the chapter and by the saveRDS() checkpoint later
+# in this file, which recomputes the identical both-strand result.
+# The stopifnot() check below checks that scanning is performed on both
+# strands, giving 186 CME-positive peaks.
+seqs   <- getSeq(genome, joint_peaks_filt)
+cme_plus  <- vcountPattern("ACGTG", seqs, fixed = TRUE)
+cme_minus <- vcountPattern("CACGT", seqs, fixed = TRUE)   # rev-comp of ACGTG
+joint_peaks_filt$CME <- (cme_plus + cme_minus) > 0
+stopifnot(length(joint_peaks_filt) == 614L,
+          sum(joint_peaks_filt$CME) == 186L)              # both-strand canonical
+# CME BED export
+cme_peaks    <- joint_peaks_filt[joint_peaks_filt$CME]
+no_cme_peaks <- joint_peaks_filt[!joint_peaks_filt$CME]
+to_bed <- function(gr){
+  df <- as.data.frame(gr)[, c("seqnames","start","end")]
+  df$start <- pmax(0, df$start - 1L)  # BED is 0-based
+  df
+}
+write.table(
+  to_bed(cme_peaks),
+  file.path(EXPORT_DIR, "CME_positive_joint_peaks_filt.bed"),
+  sep = "\t", quote = FALSE,
+  row.names = FALSE, col.names = FALSE
+); length(cme_peaks)
+write.table(
+  to_bed(no_cme_peaks),
+  file.path(EXPORT_DIR, "CME_negative_joint_peaks_filt.bed"),
+  sep = "\t", quote = FALSE,
+  row.names = FALSE, col.names = FALSE
+); length(no_cme_peaks)
+#------------------------------#
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+library(GenomicFeatures)
+txdb <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+# ---- 1. Distance to nearest TSS ----
+tss <- promoters(txdb, upstream = 0, downstream = 1)
+tss <- keepSeqlevels(tss, 
+                     c("chr2L","chr2R","chr3L","chr3R","chr4","chrX"),
+                     pruning.mode = "coarse")
+
+dist_hits <- distanceToNearest(joint_peaks_filt, tss, 
+                                ignore.strand = TRUE)
+
+# Initialise to NA then fill matched rows
+joint_peaks_filt$distanceToTSS <- NA_integer_
+joint_peaks_filt$distanceToTSS[queryHits(dist_hits)] <- 
+    mcols(dist_hits)$distance
+
+# ---- 2. Enhancer overlap flag ----
+# enhancers_filt must exist, with keepSeqlevels applied, before this step is run
+joint_peaks_filt$overlaps_enhancer <- 
+    countOverlaps(joint_peaks_filt, 
+                  enhancers_filt, 
+                  ignore.strand = TRUE) > 0
+# ---- 3. Sanity check before proceeding ----
+table(is.na(joint_peaks_filt$distanceToTSS))  # should be all FALSE
+table(joint_peaks_filt$overlaps_enhancer)      # should give TRUE/FALSE counts
+#-------------------- CME enrichment by context---------------------------------
+df <- as.data.frame(joint_peaks_filt) %>%
+  dplyr::mutate(
+    Context = case_when(
+      distanceToTSS <= 1000 ~ "Promoter",
+      overlaps_enhancer     ~ "Distal enhancer (annotated)",
+      TRUE                  ~ "Distal peak (non-annotated)"
+    ),
+    CME = as.factor(CME)
+  )
+#-----------------Fisher test of 'Promoter vs distal enhancer'------------------
+df_pe <- df %>% dplyr::filter(Context %in% c("Promoter","Distal enhancer (annotated)"))
+tab_context_cme <- table(df_pe$Context, df_pe$CME)
+tab_context_cme
+fisher.test(tab_context_cme)
+#----------Fisher test of 'Distal enhancer vs distal non-annotated--------------
+df_distal <- df %>% dplyr::filter(Context != "Promoter")
+tab_distal_cme <- table(
+  df_distal$Context == "Distal enhancer (annotated)",
+  df_distal$CME
+)
+tab_distal_cme
+fisher.test(tab_distal_cme)
+#---------------- Plotting Figure 3.13. CME vs ChIP signal----------------------
+png(file = file.path(FIGURES_DIR, "fig3_13.png"),
+  width = 1500, height = 1000, res = 300)
+library(ggplot2)
+pval <- wilcox.test(signalValue ~ CME, data = df)$p.value
+p_fmt_12 <- if (pval < 0.001) paste0("italic(p)==", formatC(pval, format = "e", digits = 2)) else paste0("italic(p)==", round(pval, 3))
+ggplot(df, aes(x = CME, y = signalValue)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.3) +
+  scale_x_discrete(labels = c("FALSE" = "CME-negative", "TRUE" = "CME-positive")) +
+  ylab("Trh/Tgo ChIP signal (signalValue)") +
+  annotate(
+    "text",
+    x     = 1.5,
+    y     = max(df$signalValue, na.rm = TRUE),
+    label = p_fmt_12,
+    parse = TRUE,
+    size  = 5
+  ) +
+  theme_bw()
+while (!is.null(dev.list())) dev.off()
+```
+
+
+```{r, include=TRUE, eval=FALSE, 'Figure 3.14. Promoter vs distal enhancer signal'}
+# fig3_15.png, CME-containing Trh/Tgo peaks, distal enrichment (Figure 3.14)
+png(file = file.path(FIGURES_DIR, "fig3_15.png"),
+  width = 1500, height = 1000, res = 300
+)
+library(ggplot2)
+library(dplyr)
+df_signal <- df %>%
+  dplyr::filter(Context %in% c("Promoter", "Distal enhancer (annotated)"))
+## Sample sizes. The labels are named so that each is bound to its class
+## (an unnamed vector would be matched to the sorted levels).
+lev_13 <- c("Promoter", "Distal enhancer (annotated)")
+legend_labels <- c(
+  "Promoter" = paste0("Promoter (n=", sum(df_signal$Context == "Promoter"), ")"),
+  "Distal enhancer (annotated)" = paste0("Distal enhancer (n=", sum(df_signal$Context == "Distal enhancer (annotated)"), ")")
+)
+stopifnot(setequal(names(legend_labels), unique(df_signal$Context)))
+## Statistics
+pval <- wilcox.test(signalValue ~ Context, data = df_signal)$p.value
+# ---- Live p-value formatting for ggplot annotate() ----
+  pval_13 <- wilcox.test(signalValue ~ Context, data = df_signal)$p.value
+
+# Format for parse = TRUE: must be valid R expression syntax
+  if (pval_13 < 0.001) {
+  parts <- strsplit(formatC(pval_13, format = "e", digits = 2), "e")[[1]]
+  p_label_13 <- paste0("italic(p)==",
+                       parts[1], " %*% 10^{", as.integer(parts[2]), "}")
+} else {
+  p_label_13 <- paste0("italic(p)==", round(pval_13, 3))
+}
+ggplot(df_signal, aes(x = signalValue, colour = Context, fill = Context)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  theme_bw() +
+  xlab("Trh/Tgo ChIP signal") +
+  ylab("Density") +
+  scale_colour_manual(
+    values = PAL_CONTEXT_LABELS[lev_13], breaks = lev_13,
+    labels = legend_labels
+  ) +
+  scale_fill_manual(
+    values = PAL_CONTEXT_LABELS[lev_13], breaks = lev_13,
+    labels = legend_labels
+  ) +
+  theme(
+    legend.position = c(0.7, 0.7),
+    legend.background = element_rect(fill = "white", colour = "black"),
+    legend.title = element_blank()
+  ) +
+  ## p-value annotation
+    annotate(
+    "text",
+    x      = Inf,
+    y      = Inf,
+    label  = p_label_13,
+    parse  = TRUE,
+    hjust  = 1.1,
+    vjust  = 1.5,
+    size   = 5
+  )
+while (!is.null(dev.list())) dev.off()
+## Class medians: promoter-proximal peaks carry the higher signal.
+med_sig <- tapply(df_signal$signalValue, df_signal$Context, median)
+stopifnot(med_sig[["Promoter"]] > med_sig[["Distal enhancer (annotated)"]])
+save_values("ch3_signal_context", list(
+  medSignalPromoter  = formatC(med_sig[["Promoter"]], format = "f", digits = 1),
+  medSignalDistalEnh = formatC(med_sig[["Distal enhancer (annotated)"]], format = "f", digits = 1)
+))
+```
+
+
+```{r,include=TRUE, eval=FALSE}
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+
+seqs_cme_pos <- getSeq(genome, cme_peaks)
+names(seqs_cme_pos) <- paste0("peak_", seq_along(seqs_cme_pos))
+writeXStringSet(seqs_cme_pos, file.path(EXPORT_DIR, "CME_positive_sequences.fa"))
+
+seqs_cme_neg <- getSeq(genome, no_cme_peaks)
+names(seqs_cme_neg) <- paste0("peak_", seq_along(seqs_cme_neg))
+writeXStringSet(seqs_cme_neg, file.path(EXPORT_DIR, "CME_negative_sequences.fa"))
+```
+
+
+## *De novo* motif discovery and triage
+```{bash, include=TRUE, eval=FALSE}
+cd reference
+wget https://hgdownload.soe.ucsc.edu/goldenPath/dm6/database/rmsk.txt.gz
+gunzip rmsk.txt.gz
+# Extract just the BED coordinates (columns 6,7,8 are chrom, start, end)
+awk '{print $6"\t"$7"\t"$8}' rmsk.txt > dm6_repeats.bed
+```
+
+```{r, bed-export, include=TRUE, eval=FALSE}
+# Generating a BED file to upload to MEME-ChIP for PWM motif discovery
+library(GenomicRanges)
+## Drop peaks shorter than 5 bp
+length(joint_peaks_filt)        # before
+joint_peaks_meme <- joint_peaks_filt[width(joint_peaks_filt) >= 5]
+joint_peaks_unique <- unique(joint_peaks_meme)
+length(joint_peaks_unique)
+
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+seqs <- getSeq(genome, joint_peaks_unique)
+names(seqs) <- paste0("peak_", seq_along(seqs))
+writeXStringSet(seqs, file.path(EXPORT_DIR, "Trh_Tgo_joint_peaks_filt_raw.fa"))
+getwd()
+```
+
+```{r}
+joint_bed <- data.frame(
+  chr    = as.character(seqnames(joint_peaks_unique)),
+  start  = start(joint_peaks_unique) - 1,
+  end    = end(joint_peaks_unique),
+  name   = paste0("joint_peak_", seq_along(joint_peaks_unique)),
+  score  = 0,
+  strand = "*",
+  stringsAsFactors = FALSE
+)
+write.table(joint_bed,
+  file = file.path(EXPORT_DIR, "Trh_Tgo_joint_peaks_native_width_for_MEME_ChIP.bed"),
+  sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+```{r, include=TRUE, eval=FALSE}
+# Genomic-coordinate BED (peak_N names) -> repeat-masked DISCOVERY input only.
+jb <- data.frame(as.character(seqnames(joint_peaks_unique)),
+                 start(joint_peaks_unique) - 1L, end(joint_peaks_unique),
+                 paste0("peak_", seq_along(joint_peaks_unique)), 0L, ".")
+write.table(jb, file.path(EXPORT_DIR, "Trh_Tgo_joint_peaks_filt.bed"),
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+```{bash, include=TRUE, eval=FALSE}
+cd $PROJECT_DIR
+meme-chip --version          
+
+cat reference/motif_databases/FLY/fly_factor_survey.meme \
+reference/motif_databases/JASPAR/JASPAR2024_CORE_insects_non-redundant_v2.meme \
+> reference/motif_databases/combined_drosophila.meme
+DB="reference/motif_databases/combined_drosophila.meme"   # Fly Factor Survey + JASPAR Insects
+
+meme-chip \
+ -oc data/chapter3/memechip_Trh_Tgo_masked  \
+ -db "$DB"  \
+ -order 0  \
+ -meme-nmotifs 10 \
+ -minw 6 -maxw 30 \
+ -seed 777 \
+ data/chapter3/Trh_Tgo_joint_peaks_filt_repeatmasked.fa
+```
+
+# Hard-masking for STREME (used in Chapter 4)
+```{bash, include=TRUE, eval=FALSE}
+# DISCOVERY input ONLY (STREME / MEME-ChIP). NOT a FIMO input.
+# Mask repeats on the GENOME, then extract peaks, so chrom names match.
+cd $PROJECT_DIR
+[ -s reference/dm6_hardmasked.fa ] || bedtools maskfasta -fi reference/dm6.fa -bed reference/dm6_repeats.bed -fo reference/dm6_hardmasked.fa -mc N
+bedtools getfasta -nameOnly -fi reference/dm6_hardmasked.fa \
+  -bed data/chapter3/Trh_Tgo_joint_peaks_filt.bed \
+  -fo  data/chapter3/Trh_Tgo_joint_peaks_filt_repeatmasked.fa
+n=$(grep -v '^>' data/chapter3/Trh_Tgo_joint_peaks_filt_repeatmasked.fa | tr -cd N | wc -c)
+echo "N bases masked: $n"; [ "$n" -gt 0 ] || { echo "ABORT — masking did nothing"; exit 1; }
+```
+
+
+MEME-ChIP was run on meme-suite.org with the settings below (see the Methods chapter).
+
+| Setting | Value | Rationale |
+|---|---|---|
+| Tool | MEME-ChIP | Combines MEME, STREME, CentriMo |
+| Input | Full 614-peak FASTA | Sufficient n for CentriMo |
+| Sequence alphabet | DNA | — |
+| Motif discovery | MEME + STREME both enabled | STREME catches lower-frequency motifs |
+| Min motif width | 6 | Captures minimal E-box |
+| Max motif width | 20 | Covers composite TF sites |
+| Number of motifs | 10 | Enough without noise inflation |
+| Background model | 0-order Markov from input sequences | Matched to the composition of the input |
+| CentriMo | Enabled | Tests central enrichment relative to background |
+| Motif databases | JASPAR Insects 2024 + Fly Factor Survey | Most relevant for *Drosophila* |
+| FIMO | Enabled | FIMO output is used by the downstream chunks |
+
+
+The following motifs were rescored with FIMO against all 614 Trh/Tgo
+heterodimer peak sequences. The CME was included as a manually specified
+reference motif; of the two motifs MEME returned, Motif1 was excluded as a
+low-complexity artefact and Motif2 was the sole de novo motif retained.
+
+```
+MEME output (memechip_Trh_Tgo_masked/meme_out/meme.xml), verbatim:
+
+  MEME-1  AWWWWWWWWWWWAAHAWATWWAAAAWWWW   width 29  sites 268  E = 4.0e-114  EXCLUDED
+  MEME-2  GTRCACTGARARAAA                 width 15  sites  39  E = 1.1e-023  RETAINED (= Motif2)
+
+  Reference motif, manually specified:
+  CME     ACGTG                           canonical CNS midline element core
+```
+
+```{r motif-fimo-inputs, include=TRUE, eval=FALSE, echo=TRUE}
+# The FIMO runs use MEME's own PWM files rather than a typed consensus string.
+# Motif2's PWM is STRCACTGARARAAA.meme.
+# EXPORT_DIR is this chapter's data/chapter3 (set in the setup chunk)
+motif2_pwm <- file.path(EXPORT_DIR, "STRCACTGARARAAA.meme")
+meme_xml   <- file.path(EXPORT_DIR, "memechip_Trh_Tgo_masked", "meme_out", "meme.xml")
+stopifnot(file.exists(motif2_pwm), file.exists(meme_xml))
+
+# Confirm the retained motif is the one the text quotes, so a re-run cannot
+# silently pick up a different motif. Read from the MEME header directly, no
+# package dependency, so this check works in any session.
+hdr <- readLines(motif2_pwm, warn = FALSE)
+mline <- grep("^MOTIF ", hdr, value = TRUE)
+wline <- grep("w=\\s*[0-9]+", hdr, value = TRUE)[1]
+m2_name <- sub("^MOTIF\\s+(\\S+).*", "\\1", mline[1])
+m2_w    <- as.integer(sub(".*w=\\s*([0-9]+).*", "\\1", wline))
+cat("Motif2 PWM        :", mline[1], "\n")
+cat("consensus / width :", m2_name, "/", m2_w, "\n")
+stopifnot(identical(m2_name, "STRCACTGARARAAA"), m2_w == 15L)
+
+# Confirm MEME returned this as its second motif.
+xml <- readLines(meme_xml, warn = FALSE)
+mnames <- regmatches(xml, gregexpr('<motif id="motif_[0-9]+" name="[^"]+"', xml))
+mnames <- unlist(mnames)[1:2]
+cat("MEME motifs 1-2   :\n"); cat(paste0("  ", mnames, collapse = "\n"), "\n")
+stopifnot(any(grepl("GTRCACTGARARAAA", mnames)))
+```
+
+## Contextual enrichment of retained motifs
+```{r, include=TRUE, eval=FALSE}
+library(GenomicRanges)
+
+fimo <- read.table(
+  file.path(EXPORT_DIR, "fimo_joint","fimo.tsv"),
+  header       = TRUE,
+  sep          = "\t",
+  comment.char = "#"
+)
+
+# Inspect
+unique(fimo$motif_id)
+head(fimo)
+
+# Filter
+fimo_filt <- fimo[fimo$q.value < 0.05, ]
+cat("Motif2 hits after q < 0.05 filter:", nrow(fimo_filt), "\n")
+
+# Convert peak-local FIMO coordinates to genomic coordinates
+peak_idx <- as.integer(sub("peak_", "", fimo_filt$sequence_name))
+peak_starts <- start(joint_peaks_filt)[peak_idx]
+peak_chr    <- as.character(seqnames(joint_peaks_filt))[peak_idx]
+fimo_gr <- GRanges(
+  seqnames = peak_chr,
+  ranges = IRanges(
+    start = peak_starts + fimo_filt$start - 1L,
+    end   = peak_starts + fimo_filt$stop  - 1L
+  ),
+  strand   = fimo_filt$strand,
+  motif_id = fimo_filt$motif_id,
+  score    = fimo_filt$score,
+  qvalue   = fimo_filt$q.value
+)
+
+# Verify seqlevels match joint_peaks_filt
+intersect(seqlevels(joint_peaks_filt), seqlevels(fimo_gr))
+# Expect: "chr2L" "chr2R" "chr3L" "chr3R" "chr4" "chrX"
+
+# Annotate
+joint_peaks_filt$Motif2 <- countOverlaps(
+  joint_peaks_filt,
+  fimo_gr,
+  ignore.strand = TRUE
+) > 0
+
+cat("Peaks with Motif2:", sum(joint_peaks_filt$Motif2), "\n")
+cat("Unique peaks with Motif2:",
+    sum(countOverlaps(joint_peaks_filt, fimo_gr, ignore.strand = TRUE) > 0), "\n")
+```
+
+```{r motif2-contextual-enrichment, include=TRUE, eval=FALSE}
+#---------- Motif2 (TTTYTYHCAGTGTA): contextual enrichment ----------
+joint_peaks_filt$Enhancer_Status <- case_when(
+  joint_peaks_filt$Regulatory_Class == "Distal enhancer (annotated)"            ~ "Annotated_enhancer",
+  joint_peaks_filt$Regulatory_Class == "Promoter-proximal enhancer (annotated)" ~ "Annotated_enhancer",
+  joint_peaks_filt$Regulatory_Class == "Promoter-proximal peak (non-annotated)" ~ "Non_annotated",
+  joint_peaks_filt$Regulatory_Class == "Distal peak (non-annotated)"            ~ "Non_annotated"
+)
+
+# ---- Rebuild tab_refined from live columns ----
+stopifnot("Regulatory_Class" %in% names(mcols(joint_peaks_filt)))
+stopifnot("Motif2"          %in% names(mcols(joint_peaks_filt)))
+
+df_motif_refined <- as.data.frame(mcols(joint_peaks_filt))
+
+tab_refined <- table(
+  df_motif_refined$Regulatory_Class,
+  df_motif_refined$Motif2
+)
+
+cat("tab_refined:\n")
+print(tab_refined)
+fisher.test(tab_refined)
+```
+
+```{r,include=TRUE, eval=FALSE}
+# ---- Figure 3.15 --------------------------------------------------------
+get_count <- function(tbl, row, col) {
+  if (row %in% rownames(tbl) && col %in% colnames(tbl)) as.integer(tbl[row, col]) else 0L
+}
+lv314 <- c("Distal enhancer\n(annotated)", "Promoter-proximal\nenhancer (annotated)",
+           "Promoter-proximal\npeak (non-annotated)", "Distal peak\n(non-annotated)")
+n_de <- as.integer(rc["Distal enhancer (annotated)"])
+n_pe <- as.integer(rc["Promoter-proximal enhancer (annotated)"])
+n_pn <- as.integer(rc["Promoter-proximal peak (non-annotated)"])
+n_dn <- as.integer(rc["Distal peak (non-annotated)"])
+m_de <- get_count(tab_refined, "Distal enhancer (annotated)",            "TRUE")
+m_pe <- get_count(tab_refined, "Promoter-proximal enhancer (annotated)", "TRUE")
+m_pn <- get_count(tab_refined, "Promoter-proximal peak (non-annotated)", "TRUE")
+m_dn <- get_count(tab_refined, "Distal peak (non-annotated)",            "TRUE")
+df314 <- data.frame(
+  Context = factor(lv314, levels = lv314),
+  Panel   = factor(c("Annotated enhancers","Annotated enhancers",
+                     "Non-annotated peaks","Non-annotated peaks"),
+                   levels = c("Annotated enhancers","Non-annotated peaks")),
+  Pct     = c(100*m_de/n_de, 100*m_pe/n_pe, 100*m_pn/n_pn, 100*m_dn/n_dn),
+  Count   = sprintf("(%d/%d)", c(m_de,m_pe,m_pn,m_dn), c(n_de,n_pe,n_pn,n_dn)),
+  stringsAsFactors = FALSE
+)
+fills314 <- pal_context(c("distal_enh","prox_enh","prox_peak","distal_unann"))
+names(fills314) <- lv314
+p314 <- thesis_bar(df314, x = "Context", y = "Pct", fill = "Context",
+                   value_fmt = "%.1f%%", count = "Count", facet = "Panel",
+                   fills = fills314, y_max = 58, y_lab = "Peaks with Motif2 (%)",
+                   global_p = fisher.test(tab_refined)$p.value)
+ggsave(file.path(FIGURES_DIR, "fig3_16_motif2_context.png"), p314,
+       width = 8, height = 4.3, dpi = 300, bg = "white")
+```
+## Adding CME to joint_peak_filt
+```{r cme-genomic-coordinates,include=TRUE, eval=FALSE}
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+
+# Extract genomic peak sequences
+peak_seqs <- getSeq(genome, joint_peaks_filt)
+
+# Search both strands
+cme_plus  <- vmatchPattern("ACGTG", peak_seqs)
+cme_minus <- vmatchPattern("CACGT", peak_seqs)
+
+# Helper
+hits_to_granges <- function(hits, peaks) {
+
+  idx <- rep(seq_along(peaks), elementNROWS(hits))
+
+  GRanges(
+    seqnames = seqnames(peaks)[idx],
+    ranges = IRanges(
+      start = start(peaks)[idx] +
+              unlist(start(hits)) - 1,
+      width = width(unlist(hits))
+    )
+  )
+}
+
+cme_gr_plus  <- hits_to_granges(cme_plus, joint_peaks_filt)
+cme_gr_minus <- hits_to_granges(cme_minus, joint_peaks_filt)
+
+cme_genomic <- c(cme_gr_plus, cme_gr_minus)
+
+# Annotate peaks
+joint_peaks_filt$CME <- countOverlaps(
+  joint_peaks_filt,
+  cme_genomic,
+  ignore.strand = TRUE
+) > 0
+
+# Verify
+table(joint_peaks_filt$CME)
+table(joint_peaks_filt$Motif2)
+
+# Peaks with both
+peaks_both <- joint_peaks_filt[
+  joint_peaks_filt$CME &
+  joint_peaks_filt$Motif2
+]
+length(peaks_both)
+saveRDS(joint_peaks_filt, file.path(EXPORT_DIR, "joint_peaks_filt.rds"))
+```
+
+# Motif2 deconfounding tests (tests 1 and 3)
+```{r test1-motif2-deconfounding-regression, include=TRUE, eval=FALSE, echo=TRUE}
+# ---- TEST 1: does Motif2 dosage predict primary Trh/Tgo occupancy, ----
+# ---- independent of GC, width, TSS distance, CME? ----
+# Outcome: MACS3 fold-enrichment over input (data/chapter3/trh_joint_macs3_fe.csv,
+# the value at the summit of the IDR-paired replicate peaks, averaged over the two
+# replicates). signalValue is mean pooled-ChIP coverage and is not input-normalised;
+# the same model on signalValue is kept as fit_signal for comparison.
+# Runs on the LIVE objects produced earlier in this Rmd:
+#   joint_peaks_filt (614 peaks, with signalValue/distanceToTSS/CME mcols)
+#   fimo_gr          (motif instances; must be subset to Motif2)
+EXPORT_DIR <- file.path(PROJECT_DIR, "data/chapter3")
+
+library(GenomicRanges); library(Biostrings)
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+
+stopifnot(exists("joint_peaks_filt"), length(joint_peaks_filt) == 614)
+stopifnot(exists("fimo_gr"))
+
+# --- isolate Motif2 from CME / Motif_1 contamination --------------
+cat("motif_id contents of fimo_gr:\n"); print(table(fimo_gr$motif_id))
+motif2_gr <- fimo_gr[fimo_gr$motif_id == "STRCACTGARARAAA"]
+stopifnot(length(motif2_gr) > 0)   # 0 means the FIMO motif labels differ
+cat("Motif2 instances used for dosage:", length(motif2_gr), "\n")
+
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+seqs   <- getSeq(genome, joint_peaks_filt)
+
+fe_tab <- read.csv(file.path(EXPORT_DIR, "trh_joint_macs3_fe.csv"))
+stopifnot(nrow(fe_tab) == length(joint_peaks_filt),
+          all(fe_tab$seqnames == as.character(seqnames(joint_peaks_filt))),
+          all(fe_tab$start == start(joint_peaks_filt)), all(fe_tab$end == end(joint_peaks_filt)),
+          !anyNA(fe_tab$macs3_fold_enrichment))
+
+df <- data.frame(
+  peak_score   = fe_tab$macs3_fold_enrichment,
+  signal_value = joint_peaks_filt$signalValue,
+  width        = width(joint_peaks_filt),
+  dist_tss     = joint_peaks_filt$distanceToTSS,
+  has_cme      = as.integer(joint_peaks_filt$CME),
+  n_motif2     = countOverlaps(joint_peaks_filt, motif2_gr, ignore.strand = TRUE),
+  gc_content   = as.numeric(letterFrequency(seqs, "GC", as.prob = TRUE))
+)
+df$has_motif2    <- as.integer(df$n_motif2 > 0)
+df$log_dist_tss  <- log10(df$dist_tss + 1)
+
+# --- full model + collinearity ----------------------------------------------
+fit_full <- lm(peak_score ~ gc_content + width + log_dist_tss + has_cme + n_motif2,
+               data = df)
+fit_signal <- lm(signal_value ~ gc_content + width + log_dist_tss + has_cme + n_motif2,
+                 data = df)   # raw coverage as outcome, for comparison
+if (!requireNamespace("car", quietly = TRUE)) install.packages("car")
+cat("\n--- VIF (flag > 5) ---\n");   print(car::vif(fit_full))
+cat("\n--- full model ---\n");       print(summary(fit_full))
+
+# --- nested F-test: does Motif2 add over confounders? -----------------------
+fit_reduced <- lm(peak_score ~ gc_content + width + log_dist_tss + has_cme, data = df)
+cat("\n--- nested F-test ---\n");     print(anova(fit_reduced, fit_full))
+cat("adj R^2 without Motif2:", summary(fit_reduced)$adj.r.squared, "\n")
+cat("adj R^2 with    Motif2:", summary(fit_full)$adj.r.squared,    "\n")
+
+# --- binary robustness ------------------------------------------------------
+fit_bin <- lm(peak_score ~ gc_content + width + log_dist_tss + has_cme + has_motif2,
+              data = df)
+cat("\n--- binary Motif2 ---\n")
+print(summary(fit_bin)$coefficients["has_motif2", , drop = FALSE])
+
+# === REFEREE PRE-EMPTS (added after TEST1 review) ===========================
+# (a) log-outcome: fold-enrichment is right-skewed; does the sign/significance hold?
+fit_log <- lm(log1p(peak_score) ~ gc_content + width + log_dist_tss + has_cme + n_motif2,
+              data = df)
+cat("\n--- (a) log-outcome ---\n")
+print(summary(fit_log)$coefficients["n_motif2", , drop = FALSE])
+
+# (b) GC-only adjustment: strips possible mediator conditioning (TSS dist/width)
+fit_gc <- lm(peak_score ~ gc_content + n_motif2, data = df)
+cat("\n--- (b) GC-only adjustment ---\n")
+print(summary(fit_gc)$coefficients["n_motif2", , drop = FALSE])
+
+# (c) heteroscedasticity-robust SEs (HC3) on the full model
+if (!requireNamespace("sandwich", quietly = TRUE)) install.packages("sandwich")
+if (!requireNamespace("lmtest",   quietly = TRUE)) install.packages("lmtest")
+cat("\n--- (c) HC3-robust SEs, full model ---\n")
+print(lmtest::coeftest(fit_full, vcov. = sandwich::vcovHC(fit_full, type = "HC3")))
+
+saveRDS(list(full = fit_full, reduced = fit_reduced, binary = fit_bin,
+             log = fit_log, gc_only = fit_gc, signal = fit_signal,
+             vif = car::vif(fit_full), df = df,
+             outcome = "MACS3 fold-enrichment over input; element signal holds the same model on raw coverage"),
+        file.path(EXPORT_DIR, "test1_regression_binding.rds"))
+```
+
+```{r test3-motif2-phylop-conservation, include=TRUE, eval=FALSE, echo=TRUE}
+# ---- TEST 3: is Motif2 under purifying selection relative to its OWN ----
+# ---- immediate flanking sequence? (within-locus paired design) ----
+# PREREQUISITE: download the dm6 phyloP27way conservation track from UCSC:
+#   cd $PROJECT_DIR/data/chapter3
+#   curl -O https://hgdownload.soe.ucsc.edu/goldenPath/dm6/phyloP27way/dm6.phyloP27way.bw
+EXPORT_DIR <- file.path(PROJECT_DIR, "data/chapter3")
+
+library(GenomicRanges)
+library(rtracklayer)
+
+BW_PATH <- file.path(EXPORT_DIR, "dm6.phyloP27way.bw")
+FLANK_W <- 50L
+stopifnot(file.exists(BW_PATH))
+stopifnot(exists("joint_peaks_filt"), exists("fimo_gr"))
+
+# --- isolate Motif2 instances; this is the MASTER object & ordering ----------
+cat("motif_id contents of fimo_gr:\n"); print(table(fimo_gr$motif_id))
+motif2_gr <- fimo_gr[fimo_gr$motif_id == "STRCACTGARARAAA"]
+motif2_gr <- sort(unique(motif2_gr))           # keep strand (needed for core)
+stopifnot(length(motif2_gr) > 0, all(width(motif2_gr) == 15L))
+cat("Motif2 instances entering phyloP test:", length(motif2_gr), "\n")
+
+# unstranded copy for scoring (phyloP is strand-agnostic); same order/coords
+motif2_us <- motif2_gr; strand(motif2_us) <- "*"
+
+# --- chromosome-naming compatibility check -----------------------------------
+bwf    <- BigWigFile(BW_PATH)
+bw_chr <- seqnames(seqinfo(bwf))
+if (!all(as.character(seqnames(motif2_us)) %in% bw_chr)) {
+  warning("seqlevel mismatch between motif2_gr and bigWig; check chr naming")
+  print(setdiff(unique(as.character(seqnames(motif2_us))), bw_chr))
+}
+sl <- seqlengths(seqinfo(bwf))
+
+# --- matched flanks: same-locus, immediately adjacent, clamped to chr ---------
+left_fl  <- GRanges(seqnames(motif2_us),
+                    IRanges(start(motif2_us) - FLANK_W, start(motif2_us) - 1L))
+right_fl <- GRanges(seqnames(motif2_us),
+                    IRanges(end(motif2_us) + 1L, end(motif2_us) + FLANK_W))
+clamp <- function(g) {
+  L <- sl[as.character(seqnames(g))]
+  start(g) <- pmax(start(g), 1L); end(g) <- pmin(end(g), L); g
+}
+left_fl <- clamp(left_fl); right_fl <- clamp(right_fl)
+
+# drop any instance whose flank abuts a NEIGHBOURING motif (contamination check)
+fl_touch_motif <- countOverlaps(left_fl,  motif2_us, ignore.strand = TRUE) +
+  countOverlaps(right_fl, motif2_us, ignore.strand = TRUE)
+
+# --- per-region mean phyloP (version-robust extractor) ------------------------
+region_mean <- function(bwf, gr) {
+  s <- summary(bwf, gr, size = 1L, type = "mean")
+  if (methods::is(s, "RleList")) {
+    v <- vapply(s, function(r){x <- as.numeric(r); if(length(x)) x[1] else NA_real_}, numeric(1))
+  } else {
+    v <- vapply(s, function(g){if(length(g)) as.numeric(score(g))[1] else NA_real_}, numeric(1))
+  }
+  v[is.nan(v)] <- NA_real_; as.numeric(v)
+}
+
+motif_pp <- region_mean(bwf, motif2_us)
+left_pp  <- region_mean(bwf, left_fl)
+right_pp <- region_mean(bwf, right_fl)
+flank_pp <- rowMeans(cbind(left_pp, right_pp), na.rm = TRUE)
+flank_pp[is.nan(flank_pp)] <- NA_real_
+
+# --- CACTG core (positions 4-8 of the 15-mer, strand-aware) -------------------
+# Derived from motif2_gr -> identical ordering to flank_pp / fl_touch_motif.
+core <- motif2_gr
+plus <- as.logical(strand(motif2_gr) == "+")
+start(core)[plus]  <- start(motif2_gr)[plus] + 3L
+end(core)[plus]    <- start(motif2_gr)[plus] + 7L
+start(core)[!plus] <- end(motif2_gr)[!plus]  - 7L
+end(core)[!plus]   <- end(motif2_gr)[!plus]  - 3L
+strand(core) <- "*"
+core_pp <- region_mean(bwf, core)
+
+# --- assemble paired tables, drop NA pairs and motif-adjacent flanks ----------
+ok       <- is.finite(flank_pp) & fl_touch_motif == 0
+pp_k     <- data.frame(motif = motif_pp, flank = flank_pp)[ok & is.finite(motif_pp), ]
+pp_core  <- data.frame(core  = core_pp,  flank = flank_pp)[ok & is.finite(core_pp),  ]
+cat("Full-motif pairs retained:", nrow(pp_k),
+    "| CACTG-core pairs retained:", nrow(pp_core),
+    "of", length(motif2_gr), "\n")
+stopifnot(nrow(pp_k) >= 10)
+
+# --- paired tests -------------------------------------------------------------
+wt      <- wilcox.test(pp_k$motif,   pp_k$flank,   paired = TRUE)
+wt_core <- wilcox.test(pp_core$core, pp_core$flank, paired = TRUE)
+prop_up <- mean(pp_k$motif > pp_k$flank)
+
+cat("\n=== TEST 3: Motif2 phyloP vs own ±", FLANK_W, "bp flank ===\n", sep = "")
+cat("full motif : median", round(median(pp_k$motif), 4),
+    "vs flank", round(median(pp_k$flank), 4),
+    "| diff", round(median(pp_k$motif - pp_k$flank), 4),
+    "| prop>flank", round(prop_up, 3),
+    "| p", formatC(wt$p.value, format = "e", digits = 2), "\n")
+cat("CACTG core : median", round(median(pp_core$core), 4),
+    "vs flank", round(median(pp_core$flank), 4),
+    "| diff", round(median(pp_core$core - pp_core$flank), 4),
+    "| p", formatC(wt_core$p.value, format = "e", digits = 2), "\n")
+
+saveRDS(list(full = list(table = pp_k,    wilcox = wt,      prop_up = prop_up),
+             core = list(table = pp_core, wilcox = wt_core),
+             flank_w = FLANK_W, n_instances = length(motif2_gr)),
+        file.path(EXPORT_DIR, "test3_phylop_conservation.rds"))
+```
+
+```{r cme-motif2-spacing,include=TRUE, eval=FALSE}
+# Get spacing between CME and Motif2 centres within co-occurring peaks
+cme_in_both    <- subsetByOverlaps(cme_genomic, peaks_both, ignore.strand = TRUE)
+motif2_in_both <- subsetByOverlaps(fimo_gr, peaks_both, ignore.strand = TRUE)
+
+# For each peak, find minimum CME-to-motif2 centre distance
+spacings <- sapply(seq_along(peaks_both), function(i) {
+  cme_i <- subsetByOverlaps(
+    cme_in_both, peaks_both[i], ignore.strand = TRUE)
+  m3_i  <- subsetByOverlaps(
+    motif2_in_both, peaks_both[i], ignore.strand = TRUE)
+  if (length(cme_i) == 0 || length(m3_i) == 0) return(NA)
+  min(abs(outer(mid(ranges(cme_i)), mid(ranges(m3_i)), "-")))
+})
+
+spacings <- spacings[!is.na(spacings)]
+cat("Median CME-Motif2 spacing:", median(spacings), "bp\n")
+cat("Range:", min(spacings), "to", max(spacings), "bp\n")
+
+png(file.path(FIGURES_DIR, "fig3_17_cme_motif2_spacing.png"),
+    width = 2400, height = 1200, res = 300)
+hist(spacings,
+     breaks = 21,
+     main = "",  # <- removes title
+     xlab = "Minimum centre-to-centre distance (bp)",
+     xlim = c(0, 300),
+     col  = PAL_HETERO[["Trh/Tgo"]],
+     border = PAL_INK[["on_mark"]])
+while(!is.null(dev.list()))
+dev.off()
+```
+```{r,include=TRUE, eval=FALSE}
+# Identify which peaks have CME-motif2 spacing <= 50 bp
+close_peaks_idx <- which(spacings <= 250)
+# Extract those peaks from peaks_both
+close_peaks <- peaks_both[close_peaks_idx]
+# Print their genomic coordinates and metadata
+as.data.frame(close_peaks)
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+library(org.Dm.eg.db)
+txdb <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+genes_gr <- genes(txdb)
+# Find nearest gene for each close-spacing peak
+nearest_idx <- nearest(close_peaks, genes_gr)
+nearest_genes <- genes_gr[nearest_idx]
+# Get gene symbols
+gene_ids <- nearest_genes$gene_id
+gene_symbols <- mapIds(
+  org.Dm.eg.db,
+  keys      = gene_ids,
+  column    = "SYMBOL",
+  keytype   = "FLYBASE",
+  multiVals = "first"
+)
+data.frame(
+  peak          = as.character(granges(close_peaks)),
+  spacing       = spacings[close_peaks_idx],
+  gene          = gene_symbols,
+  distanceToTSS = close_peaks$distanceToTSS
+)
+```
+
+## Motif2 in CME-positive vs CME-negative peaks
+
+```{r cme-stratified-motif2, include=TRUE, eval=FALSE}
+# ============================================================
+# FIGURE 3.16, Motif2 frequency in CME-positive vs CME-negative peaks
+# Tests whether CACTGA (Motif2) substitutes for ACGTG (CME) in CME-negative
+# peaks, or whether the two motifs are independent of each other.
+# Requires: joint_peaks_filt$CME and joint_peaks_filt$Motif2 both TRUE/FALSE
+# ============================================================
+library(ggplot2)
+library(dplyr)
+
+stopifnot("CME"    %in% names(mcols(joint_peaks_filt)))
+stopifnot("Motif2" %in% names(mcols(joint_peaks_filt)))
+
+df_cme_m2 <- as.data.frame(mcols(joint_peaks_filt)) %>%
+  dplyr::select(CME, Motif2, Regulatory_Class) %>%
+  dplyr::mutate(
+    CME_status = ifelse(CME,     "CME-positive", "CME-negative"),
+    M2_status  = ifelse(Motif2, "Motif2 present", "Motif2 absent")
+  )
+
+# ---- 1. Primary contingency table: CME status x Motif2 ----
+tab_cme_m2 <- table(CME_status = df_cme_m2$CME_status,
+                    Motif2    = df_cme_m2$Motif2)
+cat("=== CME status x Motif2 contingency table ===\n")
+print(tab_cme_m2)
+
+freq_cme_m2 <- prop.table(tab_cme_m2, margin = 1) * 100
+cat("\nMotif2 prevalence (%) within each CME class:\n")
+print(round(freq_cme_m2, 1))
+
+# Fisher exact test
+ft_cme_m2 <- fisher.test(tab_cme_m2)
+cat("\nFisher exact test (CME status x Motif2):\n")
+cat("  OR =", round(ft_cme_m2$estimate, 3), "\n")
+cat("  p  =", formatC(ft_cme_m2$p.value, format = "e", digits = 2), "\n")
+cat("\nInterpretation:\n")
+cat("  OR > 1 -> Motif2 enriched in CME-positive (co-occurrence)\n")
+cat("  OR < 1 -> Motif2 enriched in CME-negative (substitution)\n")
+cat("  OR ~ 1 -> Motif2 independent of CME status\n")
+
+# ---- 2. Store key values for export ----
+cme_pos_m2_n   <- as.integer(tab_cme_m2["CME-positive", "TRUE"])
+cme_neg_m2_n   <- as.integer(tab_cme_m2["CME-negative", "TRUE"])
+cme_pos_total  <- sum(tab_cme_m2["CME-positive", ])
+cme_neg_total  <- sum(tab_cme_m2["CME-negative", ])
+cme_pos_m2_pct <- round(100 * cme_pos_m2_n / cme_pos_total, 1)
+cme_neg_m2_pct <- round(100 * cme_neg_m2_n / cme_neg_total, 1)
+cme_m2_OR      <- round(ft_cme_m2$estimate, 2)
+cme_m2_pval    <- ft_cme_m2$p.value
+
+# ---- 3. Figure 3.17 ----
+plot_df_cme <- data.frame(
+  CME_status = c("CME-positive", "CME-negative"),
+  n_total    = c(cme_pos_total,  cme_neg_total),
+  n_motif2   = c(cme_pos_m2_n,  cme_neg_m2_n),
+  pct_motif2 = c(cme_pos_m2_pct, cme_neg_m2_pct),
+  col        = unname(pal_binary("CME-positive", "CME-negative"))
+)
+plot_df_cme$label <- paste0(plot_df_cme$pct_motif2, "%\n(",
+                             plot_df_cme$n_motif2, "/",
+                             plot_df_cme$n_total, ")")
+
+pval_fmt_cme <- if (cme_m2_pval < 0.001) {
+  parts <- strsplit(formatC(cme_m2_pval, format = "e", digits = 2), "e")[[1]]
+  paste0("italic(p)==", parts[1], " %*% 10^{", as.integer(parts[2]), "}")
+} else {
+  paste0("italic(p)==", round(cme_m2_pval, 3))
+}
+
+p316 <- (function() {
+  plot_df_cme$Count <- sprintf("(%d/%d)", plot_df_cme$n_motif2, plot_df_cme$n_total)
+  fills316 <- pal_binary("CME-positive", "CME-negative")
+  thesis_bar(plot_df_cme, x = "CME_status", y = "pct_motif2", fill = "CME_status",
+             value_fmt = "%.1f%%", count = "Count", fills = fills316,
+             y_lab = "Peaks containing Motif2 (%)", global_p = cme_m2_pval)
+})()
+ggsave(file.path(FIGURES_DIR, "fig3_17_cme_motif2_enrichment.png"), p316,
+       width = 5, height = 4.3, dpi = 300, bg = "white")
+cat("Saved: fig3_17_cme_motif2_enrichment.png\n")
+```
+
+
+## Motif2 across Trh-unique, Tgo-unique, joint peaks and genome-wide enhancers
+
+
+```{r trh-tgo-unique-fasta, include=TRUE, eval=FALSE}
+# ============================================================
+# Trh-unique and Tgo-unique peak sets (IDR peaks with no overlap from partner factor, Tgo checked against Sim, Sima, Ss, Dys); export FASTA for FIMO.
+# ============================================================
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+
+# Trh_clean and Tgo_clean from setup chunk; joint_peaks_filt from Section 3.4
+trh_unique_peaks <- Trh_clean[!Trh_clean %over% joint_peaks_filt]
+tgo_unique_peaks <- Tgo_clean[!Tgo_clean %over% joint_peaks_filt]
+
+cat("Trh-unique peaks (no Tgo overlap):", length(trh_unique_peaks), "\n")
+cat("Tgo-unique peaks (no Trh overlap):", length(tgo_unique_peaks), "\n")
+cat("Trh/Tgo joint peaks (reference):  ", length(joint_peaks_filt), "\n")
+
+# Sanity check: a 15-bp PWM cannot be found in an interval narrower than 15 bp.
+cat("Min width  -- Trh-unique:", min(width(trh_unique_peaks)),
+    " Tgo-unique:", min(width(tgo_unique_peaks)),
+    " joint:", min(width(joint_peaks_filt)), "\n")
+
+# Export FASTA, unique sequence names (peak_N); name style is irrelevant to
+# the prevalence loader as long as names are unique within each file.
+seqs_trh_unique <- getSeq(genome, trh_unique_peaks)
+names(seqs_trh_unique) <- paste0("peak_", seq_along(seqs_trh_unique))
+writeXStringSet(seqs_trh_unique, file.path(EXPORT_DIR, "trh_unique.fa"))
+
+seqs_tgo_unique <- getSeq(genome, tgo_unique_peaks)
+names(seqs_tgo_unique) <- paste0("peak_", seq_along(seqs_tgo_unique))
+writeXStringSet(seqs_tgo_unique, file.path(EXPORT_DIR, "tgo_unique.fa"))
+
+cat("\nWrote trh_unique.fa and tgo_unique.fa to EXPORT_DIR.\n")
+```
+
+
+```{r joint-fasta-export, include=TRUE, eval=FALSE}
+# ============================================================
+# Export the Trh/Tgo joint peak set as joint.fa for the FIMO loop.
+#
+# The joint peaks must be scanned with the same FIMO parameters as the three
+# other sets, so joint.fa is regenerated here rather than reusing any earlier
+# joint FASTA built for a different purpose (e.g. MEME-ChIP discovery input).
+# ============================================================
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+
+cat("Min width -- joint_peaks_filt:", min(width(joint_peaks_filt)), "\n")
+
+seqs_joint <- getSeq(genome, joint_peaks_filt)
+names(seqs_joint) <- paste0("peak_", seq_along(seqs_joint))
+writeXStringSet(seqs_joint, file.path(EXPORT_DIR, "joint.fa"))
+cat("Wrote", length(seqs_joint), "joint peak sequences to joint.fa\n")
+```
+
+
+```{r enhancer-fasta-export, include=TRUE, eval=FALSE}
+# ============================================================
+# Build genome-wide annotated-enhancer set, export enhancers_genomewide.fa for full-PWM FIMO scan; keep enhancers >=15 bp (Motif2 PWM width).
+# ============================================================
+library(Biostrings)
+library(GenomicRanges)
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+genome <- BSgenome.Dmelanogaster.UCSC.dm6
+
+# Load the annotated-enhancer BED if not already in the session.
+if (!exists("enhancers_filt")) {
+  enhancers_raw <- read.table(
+    file.path(REFERENCE_LISTS, "merged_embryo_5-20_enhancers_dm6.bed"),
+    header = FALSE, stringsAsFactors = FALSE
+  )
+  colnames(enhancers_raw) <- c("seqnames", "start", "end")
+  enhancers_gr <- GRanges(
+    seqnames = enhancers_raw$seqnames,
+    ranges   = IRanges(start = enhancers_raw$start, end = enhancers_raw$end)
+  )
+  standard_chrs <- c("chr2L", "chr2R", "chr3L", "chr3R", "chr4", "chrX")
+  enhancers_filt <- keepSeqlevels(enhancers_gr, standard_chrs,
+                                  pruning.mode = "coarse")
+}
+
+# Full-PWM enhancer set: width >= 15 (PWM length).
+enhancers_filt_pwm <- enhancers_filt[width(enhancers_filt) >= 15]
+cat("Enhancers retained for 15-bp PWM scan (width >= 15):",
+    length(enhancers_filt_pwm), "of", length(enhancers_filt), "\n")
+
+enh_seqs_export <- getSeq(genome, enhancers_filt_pwm)
+names(enh_seqs_export) <- paste0(
+  as.character(seqnames(enhancers_filt_pwm)), ":",
+  start(enhancers_filt_pwm), "-", end(enhancers_filt_pwm)
+)
+writeXStringSet(enh_seqs_export,
+                file.path(EXPORT_DIR, "enhancers_genomewide.fa"))
+cat("Wrote", length(enh_seqs_export),
+    "enhancer sequences to enhancers_genomewide.fa\n")
+```
+
+
+```{bash fimo-four-way-scan, include=TRUE, eval=FALSE}
+# ============================================================
+# FIMO scan of four sets with PWM STRCACTGARARAAA.meme, --thresh 1.0E-4, --bgfile --nrdb--, run on the HPC.
+# Matches footer of original Trh/Tgo joint-peak fimo.tsv; feeds Figure 3.17 bars.
+# Requires in EXPORT_DIR (data/chapter3): STRCACTGARARAAA.meme, joint.fa, trh_unique.fa, tgo_unique.fa, enhancers_genomewide.fa
+# ============================================================
+cd $PROJECT_DIR/data/chapter3
+
+for SET in joint trh_unique tgo_unique enhancers_genomewide; do
+  conda run -n phd fimo \
+    --oc fimo_${SET} \
+    --verbosity 1 \
+    --bgfile --nrdb-- \
+    --thresh 1.0E-4 \
+    STRCACTGARARAAA.meme \
+    ${SET}.fa
+  echo "Done: fimo_${SET}/fimo.tsv"
+done
+```
+
+
+```{r motif2-fimo-prevalence}
+# ============================================================
+# Motif2 prevalence loader.
+# FIMO collapses headers to chromosome names in sequence_name and reports hits in absolute genome coordinates, so unique(sequence_name) counts chromosomes; enhancer set is counted by genomic overlap instead.
+# q-value is corrected per scan, not comparable between the 614-peak scan and the 35798-enhancer scan; cross-set comparison uses p-value < 1e-4.
+# ============================================================
+library(GenomicRanges)
+
+PVAL_THRESH <- 1e-4   # matches the FIMO --thresh used for all four scans
+
+# --- Loader A: peak sets scanned with peak_N FASTA headers -------------------
+# sequence_name == "peak_<i>"; one row per hit; count distinct peaks hit.
+motif2_prev_peakindexed <- function(fimo_tsv, n_total, label) {
+  stopifnot(file.exists(fimo_tsv))
+  f <- read.table(fimo_tsv, header = TRUE, sep = "\t", comment.char = "#")
+  # FIMO writes the p-value column as "p.value" after read.table name-munging
+  f <- f[f$p.value < PVAL_THRESH, ]
+  n_pos <- length(unique(f$sequence_name))
+  pct   <- round(100 * n_pos / n_total, 1)
+  cat(label, ": Motif2 in", n_pos, "/", n_total,
+      paste0("(", pct, "%)\n"))
+  list(n_pos = n_pos, n_total = n_total, pct = pct)
+}
+
+# --- Loader B: enhancer set scanned with genomic FASTA headers ---------------
+# sequence_name == chromosome; start/stop are ABSOLUTE genome coordinates.
+# Build a GRanges of hits and count target intervals with >=1 overlap.
+motif2_prev_genomic <- function(fimo_tsv, target_gr, label) {
+  stopifnot(file.exists(fimo_tsv))
+  f <- read.table(fimo_tsv, header = TRUE, sep = "\t", comment.char = "#")
+  f <- f[f$p.value < PVAL_THRESH, ]
+  hits_gr <- GRanges(
+    seqnames = f$sequence_name,
+    ranges   = IRanges(start = f$start, end = f$stop),
+    strand   = f$strand
+  )
+  hit_target <- countOverlaps(target_gr, hits_gr, ignore.strand = TRUE) > 0
+  n_pos <- sum(hit_target)
+  n_tot <- length(target_gr)
+  pct   <- round(100 * n_pos / n_tot, 1)
+  cat(label, ": Motif2 in", n_pos, "/", n_tot,
+      paste0("(", pct, "%)\n"))
+  list(n_pos = n_pos, n_total = n_tot, pct = pct)
+}
+
+# --- Four scans --------------------------------------------------------------
+# confirm the joint / unique fimo.tsv files use peak_N naming.
+# tail their footers; if any used genomic headers, switch it to loader B.
+joint_m2 <- motif2_prev_peakindexed(
+  file.path(EXPORT_DIR, "fimo_joint", "fimo.tsv"),
+  length(joint_peaks_filt), "Trh/Tgo joint")
+
+trh_u_m2 <- motif2_prev_peakindexed(
+  file.path(EXPORT_DIR, "fimo_trh_unique", "fimo.tsv"),
+  length(trh_unique_peaks), "Trh-unique")
+
+tgo_u_m2 <- motif2_prev_peakindexed(
+  file.path(EXPORT_DIR, "fimo_tgo_unique", "fimo.tsv"),
+  length(tgo_unique_peaks), "Tgo-unique")
+
+enh_m2 <- motif2_prev_genomic(
+  file.path(EXPORT_DIR, "fimo_enhancers_genomewide", "fimo.tsv"),
+  enhancers_filt_pwm, "Genome-wide enhancers")
+
+# --- Variables consumed by Figure 3.17 and the computed-values export --------
+joint_m2_n         <- joint_m2$n_pos
+joint_m2_total     <- joint_m2$n_total
+joint_m2_pct       <- joint_m2$pct
+
+trh_unique_m2_n    <- trh_u_m2$n_pos
+trh_unique_n_total <- trh_u_m2$n_total
+trh_unique_m2_pct  <- trh_u_m2$pct
+
+tgo_unique_m2_n    <- tgo_u_m2$n_pos
+tgo_unique_n_total <- tgo_u_m2$n_total
+tgo_unique_m2_pct  <- tgo_u_m2$pct
+
+mspec_n_enh_m2_pos <- enh_m2$n_pos
+mspec_n_enh_total  <- enh_m2$n_total
+mspec_enh_pct      <- enh_m2$pct
+
+# --- Fisher tests: each unique set vs joint reference ------------------------
+ft_trh_unique <- fisher.test(matrix(
+  c(joint_m2_n,      joint_m2_total - joint_m2_n,
+    trh_unique_m2_n, trh_unique_n_total - trh_unique_m2_n), nrow = 2))
+ft_tgo_unique <- fisher.test(matrix(
+  c(joint_m2_n,      joint_m2_total - joint_m2_n,
+    tgo_unique_m2_n, tgo_unique_n_total - tgo_unique_m2_n), nrow = 2))
+
+cat("\nFisher (joint vs Trh-unique):  OR =", round(ft_trh_unique$estimate, 2),
+    " p =", formatC(ft_trh_unique$p.value, format = "e", digits = 2), "\n")
+cat("Fisher (joint vs Tgo-unique):  OR =", round(ft_tgo_unique$estimate, 2),
+    " p =", formatC(ft_tgo_unique$p.value, format = "e", digits = 2), "\n")
+
+ft_trh_OR <- round(ft_trh_unique$estimate, 2); ft_trh_p <- ft_trh_unique$p.value
+ft_tgo_OR <- round(ft_tgo_unique$estimate, 2); ft_tgo_p <- ft_tgo_unique$p.value
+
+motif2_summary <- data.frame(
+  Peak_set   = c("Trh/Tgo joint (reference)", "Trh-unique (no Tgo)",
+                 "Tgo-unique (no Trh)", "Genome-wide enhancers"),
+  N_total    = c(joint_m2_total, trh_unique_n_total,
+                 tgo_unique_n_total, mspec_n_enh_total),
+  N_motif2   = c(joint_m2_n, trh_unique_m2_n,
+                 tgo_unique_m2_n, mspec_n_enh_m2_pos),
+  Pct_motif2 = c(joint_m2_pct, trh_unique_m2_pct,
+                 tgo_unique_m2_pct, mspec_enh_pct),
+  stringsAsFactors = FALSE)
+cat("\n=== Motif2 prevalence (full-PWM FIMO, p < 1e-4) ===\n")
+print(motif2_summary)
+
+# --- Fisher test: joint peaks vs genome-wide enhancer baseline ---------------
+# This is the tier-1 test: is Motif2 enriched at bHLH-PAS binding sites
+# relative to the genome-wide annotated-enhancer average?
+ft_joint_vs_enh <- fisher.test(matrix(
+  c(joint_m2_n,                  joint_m2_total - joint_m2_n,
+    mspec_n_enh_m2_pos,          mspec_n_enh_total - mspec_n_enh_m2_pos),
+  nrow = 2))
+
+cat("\nFisher (joint vs genome-wide enhancers):  OR =",
+    round(ft_joint_vs_enh$estimate, 2),
+    " p =", formatC(ft_joint_vs_enh$p.value, format = "e", digits = 2), "\n")
+
+mspec_peaks_vs_enh_or <- round(ft_joint_vs_enh$estimate, 2)
+mspec_peaks_vs_enh_p  <- ft_joint_vs_enh$p.value
+```
+
+```{r length-check}
+# --- Width sanity check: PWM is 15 bp; any interval < 15 bp cannot hit -------
+check_widths <- function(gr, label) {
+  w <- width(gr)
+  n_short <- sum(w < 15)
+  cat(sprintf("%-22s n=%6d  min=%5d  median=%6.0f  <15bp: %d\n",
+              label, length(gr), min(w), median(w), n_short))
+  if (n_short > 0) {
+    cat("  WARNING:", n_short, "intervals <15bp in", label,
+        "-- these are forced negatives; consider a width>=15 filter.\n")
+  }
+  invisible(n_short)
+}
+check_widths(joint_peaks_filt,   "Trh/Tgo joint")
+check_widths(trh_unique_peaks,   "Trh-unique")
+check_widths(tgo_unique_peaks,   "Tgo-unique")
+check_widths(enhancers_filt_pwm, "Enhancers (PWM set)")
+```
+
+```{r fig3-17-four-bar, include=TRUE, eval=FALSE}
+# ============================================================
+# Figure 3.17: Motif2 prevalence in Trh-unique, Tgo-unique, joint peaks and genome-wide enhancer baseline; same FIMO scan (q<0.05). Requires objects from `motif2-fimo-prevalence`
+library(ggplot2)
+
+stopifnot(exists("trh_unique_m2_pct"), exists("tgo_unique_m2_pct"),
+          exists("joint_m2_pct"),      exists("mspec_enh_pct"))
+
+fig_df <- data.frame(
+  Peak_set = factor(
+    c("Trh-unique\n(no Tgo)",
+      "Trh/Tgo joint\n(reference)",
+      "Tgo-unique\n(no Trh)",
+      "Genome-wide\nenhancers"),
+    levels = c("Trh-unique\n(no Tgo)",
+               "Trh/Tgo joint\n(reference)",
+               "Tgo-unique\n(no Trh)",
+               "Genome-wide\nenhancers")
+  ),
+  Pct_motif2 = c(trh_unique_m2_pct, joint_m2_pct,
+                 tgo_unique_m2_pct, mspec_enh_pct),
+  N_motif2   = c(trh_unique_m2_n,  joint_m2_n,
+                 tgo_unique_m2_n,  mspec_n_enh_m2_pos),
+  N_total    = c(trh_unique_n_total, joint_m2_total,
+                 tgo_unique_n_total, mspec_n_enh_total),
+  # Occupancy classes inherit their defining subunit's colour; the genome-wide
+  # set stays neutral grey because it is a reference, not a peak class.
+  Fill = unname(PAL_OCCUPANCY[c("alpha_only", "joint", "beta_only", "genome_ref")])
+)
+fig_df$Label <- paste0(fig_df$Pct_motif2, "%\n(",
+                       fig_df$N_motif2, "/", fig_df$N_total, ")")
+
+p317 <- (function() {
+  fig_df$Count <- sprintf("(%d/%d)", fig_df$N_motif2, fig_df$N_total)
+  fills317 <- fig_df$Fill; names(fills317) <- as.character(fig_df$Peak_set)
+  thesis_bar(fig_df, x = "Peak_set", y = "Pct_motif2", fill = "Peak_set",
+             value_fmt = "%.1f%%", count = "Count",
+             fills = fills317, dashed_at = mspec_enh_pct,
+             y_lab = "Sequences containing Motif2 (full PWM, %)")
+})()
+ggsave(file.path(FIGURES_DIR, "fig3_18_trh_tgo_unique_motif2.png"), p317,
+       width = 7, height = 4.3, dpi = 300, bg = "white")
+cat("Saved: fig3_18_trh_tgo_unique_motif2.png (four bars, full-PWM FIMO)\n")
+```
+
+
+
+```{r, include=FALSE, eval=FALSE}
+# ====
+# Exports Chapter 3 reported values to results/reported_values.tsv; run last, after analyses.
+# ====
+
+# ---- Helper: format p-values for scientific notation ----
+fmt_p <- function(p, digits = 2) {
+  formatted <- formatC(p, format = "e", digits = digits)
+  parts <- strsplit(formatted, "e")[[1]]
+  mantissa <- parts[1]
+  exponent <- as.integer(parts[2])
+  paste0(mantissa, "e", exponent)
+}
+
+fmt_sci <- function(x, digits = 2) {
+  # Wrapper for already-known values passed as strings (no recomputation needed)
+  x
+}
+
+# ============================================================
+# SECTION 1, Peak counts (from IDR-filtered narrowPeak files)
+# Objects: Trh_clean, Tgo_clean, joint_peaks_filt
+# ============================================================
+trh_peaks_n  <- length(Trh_clean)           # 1033
+tgo_peaks_n  <- length(Tgo_clean)           # 1403
+joint_n      <- length(joint_peaks_filt)    # 614
+
+# Percentages for Trh and Tgo participating in joint set.
+# joint_n counts pintersect intervals, not peaks; dividing by tgo_peaks_n overstates Tgo share (tgo_unique.fa: 1403 - 609 = 794).
+# Count distinct peaks per side.
+hits_tt        <- findOverlaps(Trh_clean, Tgo_clean, minoverlap = 1L)
+trh_joint_n    <- length(unique(queryHits(hits_tt)))     # 614
+tgo_joint_n    <- length(unique(subjectHits(hits_tt)))   # 609
+tgo_spanning_n <- sum(table(subjectHits(hits_tt)) > 1L)  # 5
+
+stopifnot(length(hits_tt) == joint_n,          # pairs == intersection intervals
+          all(table(queryHits(hits_tt)) == 1L),# every Trh peak has one partner
+          joint_n - tgo_joint_n == tgo_spanning_n)
+
+trh_pct_joint <- round(100 * trh_joint_n / trh_peaks_n, 1)   # 59.4
+tgo_pct_joint <- round(100 * tgo_joint_n / tgo_peaks_n, 1)   # 43.4
+
+# Trh-unique peaks (Trh peaks not in joint set)
+trh_unique_n  <- trh_peaks_n - joint_n                    # 419
+
+# ============================================================
+# SECTION 2, Permutation test: Trh vs Tgo overlap (peakPermTest)
+# Object: pt2_ (from Figure 3.6B chunk)
+# ============================================================
+perm_obs_overlap  <- pt2_$cntOverlaps$observed            # 614
+perm_zscore       <- round(pt2_$cntOverlaps$zscore, 2)    # 114.58
+perm_pval_raw     <- pt2_$cntOverlaps$pval                # 2.00e-4 (= floor 1/5001)
+perm_n            <- length(pt2_$cntOverlaps$permuted)    # 5000
+perm_ev95         <- round(quantile(pt2_$cntOverlaps$permuted, 0.95))  # 35
+perm_fold         <- round(perm_obs_overlap / mean(pt2_$cntOverlaps$permuted), 0)  # ~23
+
+# ============================================================
+# SECTION 3, Enhancer overlap counts (from Figure 3.7B chunk)
+# Objects: pt_all, pt_promoter, pt_distal
+# ============================================================
+enh_obs_all       <- pt_all$numOverlaps$observed           # 169
+enh_obs_promoter  <- pt_promoter$numOverlaps$observed      # 55
+enh_obs_distal    <- pt_distal$numOverlaps$observed        # 114
+
+enh_null_mean_all <- round(mean(pt_all$numOverlaps$permuted),      2)  # 202.13
+enh_null_sd_all   <- round(sd(pt_all$numOverlaps$permuted),        2)  # 11.19
+enh_z_all         <- round(pt_all$numOverlaps$zscore,              2)  # -2.96
+enh_p_all         <- round(pt_all$numOverlaps$pval, 5)             # 0.0026
+
+enh_null_mean_prom <- round(mean(pt_promoter$numOverlaps$permuted), 2) # 154.46
+enh_null_sd_prom   <- round(sd(pt_promoter$numOverlaps$permuted),   2) # 9.99
+enh_z_prom         <- round(pt_promoter$numOverlaps$zscore,         2) # -9.95
+enh_p_prom         <- round(pt_promoter$numOverlaps$pval,5)                     # 2e-04
+
+enh_null_mean_dist <- round(mean(pt_distal$numOverlaps$permuted),   2) # 46.79
+enh_null_sd_dist   <- round(sd(pt_distal$numOverlaps$permuted),     2) # 5.77
+enh_z_dist         <- round(pt_distal$numOverlaps$zscore,           2) # 11.64
+enh_p_dist         <- round(pt_distal$numOverlaps$pval,5)                       # 2e-04
+
+# ============================================================
+# SECTION 4, Reference gene set
+# Object: ts_sg_genes, trach_entrez, comp_entrez
+# ============================================================
+ts_sg_total      <- length(ts_sg_genes)                   # 2053
+ts_sg_entrez_n   <- length(trach_entrez)                  # 2049
+ts_sg_unmapped_n <- ts_sg_total - ts_sg_entrez_n          # 4
+
+# comp_entrez is a live setdiff() against whatever org.Dm.eg.db is installed
+# in the session, so length(comp_entrez) drifts with the annotation package
+# and need not match the geneset file that ChIP-Enrich actually read. The
+# size is therefore read off the file that was passed to chipenrich(), which
+# is the only number the reported ORs correspond to.
+.gs_written   <- read.delim(file.path(EXPORT_DIR, "geneset_tracheal_vs_complement.tsv"),
+                            header = FALSE, stringsAsFactors = FALSE)
+.gs_tab       <- table(.gs_written$V1)
+comp_entrez_n <- unname(.gs_tab[["All_dm6_minus_tracheal"]])   # 23030
+stopifnot(unname(.gs_tab[["tracheal_custom"]]) == ts_sg_entrez_n)
+
+# ChIP-Enrich further restricts each geneset to genes it can place under
+# its own locus definition. Those are the denominators the reported
+# peak-gene counts (peak genes, tracheal and comparison) belong to.
+.ce_custom <- read.csv(file.path(EXPORT_DIR, "chipenrich_ch3_custom.csv"),
+                       stringsAsFactors = FALSE)
+rownames(.ce_custom)  <- .ce_custom$Geneset.ID
+ce_trach_modelled_n   <- .ce_custom["tracheal_custom",        "N.Geneset.Genes"]  # 1986
+ce_comp_modelled_n    <- .ce_custom["All_dm6_minus_tracheal", "N.Geneset.Genes"]  # 11495
+
+# ============================================================
+# SECTION 5, Hypergeometric & permutation: peak-proximal TS/SG genes
+# Requires: N, A, B, k, p_hyper, fold_enr from Fig 3.9 chunk
+#           pt from permutation chunk
+# ============================================================
+
+nearby_genes_n     <- A
+overlap_n          <- k                          # 114
+hyper_fold         <- round(fold_enr, 2)         # 2.01
+hyper_p_val        <- p_hyper                    # 4.39e-13
+
+# Permutation test
+perm_obs_tsg       <- pt$perm_eval$observed      # 114
+perm_null_mean_tsg <- round(mean(pt$perm_eval$permuted), 2)
+perm_null_sd_tsg   <- round(sd(pt$perm_eval$permuted),   2)
+perm_z_tsg         <- round(
+  (pt$perm_eval$observed - mean(pt$perm_eval$permuted)) /
+    sd(pt$perm_eval$permuted), 2)
+perm_n_tsg         <- length(pt$perm_eval$permuted)
+
+# Empirical p-value, +1 continuity correction prevents exact zero
+perm_p_tsg_raw <- (sum(pt$perm_eval$permuted >= pt$perm_eval$observed) + 1) /
+                  (perm_n_tsg + 1)
+
+# Format both p-values identically in scientific notation
+fmt_p_sci <- function(p) {
+  s        <- formatC(p, format = "e", digits = 2)
+  parts    <- strsplit(s, "e")[[1]]
+  mantissa <- parts[1]
+  exponent <- as.integer(parts[2])
+  paste0(mantissa, "e", exponent)
+}
+
+hyper_p_fmt    <- fmt_p_sci(hyper_p_val)     # 4.39e-13
+
+perm_p_tsg_fmt <- if (perm_p_tsg_raw <= (1 / perm_n_tsg + 1e-10)) {
+  # Floor hit, no permuted value reached observed; report as bound
+  bound <- formatC(1 / perm_n_tsg, format = "e", digits = 2)
+  parts    <- strsplit(bound, "e")[[1]]
+  mantissa <- parts[1]
+  exponent <- as.integer(parts[2])
+  paste0("< ", mantissa, "e", exponent)
+  # e.g. "< 2.00e-4"
+} else {
+  fmt_p_sci(perm_p_tsg_raw)
+}
+# ============================================================
+# SECTION 6, Gene length bias test
+# Objects: ts_sg_lengths, other_lengths, wilcox test
+# ============================================================
+median_tsg_length   <- median(ts_sg_lengths)               # 4685
+median_other_length <- median(other_lengths)               # 1512
+length_fold         <- round(median_tsg_length / median_other_length, 1)  # 3.1
+wtest               <- wilcox.test(ts_sg_lengths, other_lengths)
+wilcox_W            <- wtest$statistic                     # 24279486
+# p < 2.2e-16, reported as-is
+
+# ============================================================
+# SECTION 7, ChIP-Enrich (Table 3.2)
+# Object: res_custom (from chipenrich chunk)
+# ============================================================
+trach_row   <- res_custom[res_custom$Description == "tracheal_custom", ]
+comp_row    <- res_custom[res_custom$Description == "All_dm6_minus_tracheal", ]
+
+ce_OR_trach   <- round(trach_row$Odds.Ratio, 2)            # 1.56
+ce_p_trach    <- trach_row$P.value                         # 1.82e-4
+ce_OR_comp    <- round(comp_row$Odds.Ratio, 2)             # 0.64
+ce_peakgenes_trach <- trach_row$N.Geneset.Peak.Genes       # 107
+ce_peakgenes_comp  <- comp_row$N.Geneset.Peak.Genes        # 319
+
+trach_row_fet <- res_custom_fet[res_custom_fet$Description == "tracheal_custom", ]
+ce_OR_fisher <- round(trach_row_fet$Odds.Ratio, 2)    # 1.99
+ce_p_fisher  <- trach_row_fet$P.value                  # 1.26e-8
+# ============================================================
+# SECTION 8, Regulatory context classification (Figure 3.11)
+# Object: summary_df (from fig3_12 chunk)
+# ============================================================
+# These are computed inside bar_df_35 / df_plot in the fig3_12 chunk
+# Recompute from joint_peaks_filt$Regulatory_Class for safety
+rc_counts <- table(joint_peaks_filt$Regulatory_Class)
+
+n_prom_nonanno   <- as.integer(rc_counts["Promoter-proximal peak (non-annotated)"])   # 413
+n_prom_enh       <- as.integer(rc_counts["Promoter-proximal enhancer (annotated)"])   # 55
+n_dist_enh       <- as.integer(rc_counts["Distal enhancer (annotated)"])              # 114
+n_dist_nonanno   <- as.integer(rc_counts["Distal peak (non-annotated)"])              # 32
+
+pct_prom_nonanno <- round(100 * n_prom_nonanno / joint_n, 1)  # 67.3
+pct_prom_enh     <- round(100 * n_prom_enh / joint_n, 1)      # 9
+pct_dist_enh     <- round(100 * n_dist_enh / joint_n, 1)      # 18.6
+pct_dist_nonanno <- round(100 * n_dist_nonanno / joint_n, 1)  # 5.2
+pct_promoter_total <- round(pct_prom_nonanno + pct_prom_enh, 1) # 76.3
+
+# ============================================================
+# SECTION 9, CME analysis (Figure 3.12)
+# Object: joint_peaks_filt$CME
+# ============================================================
+n_cme_pos  <- sum(joint_peaks_filt$CME)           # 186 (both-strand ACGTG)
+n_cme_neg  <- sum(!joint_peaks_filt$CME)           # 428
+pct_cme_pos <- round(100 * n_cme_pos / joint_n, 1) # 30.3
+pct_cme_neg <- round(100 * n_cme_neg / joint_n, 1) # 69.7
+
+cme_wilcox_p <- wilcox.test(signalValue ~ CME,
+                             data = as.data.frame(joint_peaks_filt))$p.value  # 0.328
+
+# ============================================================
+# SECTION 10, Distal vs promoter ChIP signal (Figure 3.13)
+# Object: df_signal
+# ============================================================
+n_promoter_signal  <- sum(df_signal$Context == "Promoter")                     # 468
+n_distal_enh_signal <- sum(df_signal$Context == "Distal enhancer (annotated)") # 114
+signal_wilcox_p    <- wilcox.test(signalValue ~ Context, data = df_signal)$p.value  # 7.40e-6
+
+# ============================================================
+# SECTION 11, Motif2 contextual enrichment (Figure 3.14)
+# Object: tab_refined, joint_peaks_filt$Motif2, Regulatory_Class
+# ============================================================
+n_motif2_total        <- sum(joint_peaks_filt$Motif2)             # 178
+pct_motif2_total      <- round(100 * n_motif2_total / joint_n, 1)  # 29
+
+n_motif2_dist_enh     <- tab_refined["Distal enhancer (annotated)", "TRUE"]          # 60
+n_motif2_prom_enh     <- tab_refined["Promoter-proximal enhancer (annotated)", "TRUE"] # 20
+n_motif2_prom_nonanno <- tab_refined["Promoter-proximal peak (non-annotated)", "TRUE"] # 86
+n_motif2_dist_nonanno <- tab_refined["Distal peak (non-annotated)", "TRUE"]            # 12
+
+pct_motif2_dist_enh     <- round(100 * n_motif2_dist_enh / n_dist_enh, 1)       # 52.6
+pct_motif2_prom_enh     <- round(100 * n_motif2_prom_enh / n_prom_enh, 1)       # 36.4
+pct_motif2_prom_nonanno <- round(100 * n_motif2_prom_nonanno / n_prom_nonanno, 1) # 20.8
+pct_motif2_dist_nonanno <- round(100 * n_motif2_dist_nonanno / n_dist_nonanno, 1) # 37.5
+motif2_fisher_p <- fisher.test(tab_refined)$p.value                              # 6.86e-10
+# Motif2 fold-enrichment comparisons (for Discussion 3.7.5).
+#
+# Fold-enrichments are computed separately for the distal-enhancer class
+# and the promoter-enhancer class, using the counts defined just above,
+# so that the two classes are not pooled into a single claim.
+.f <- function(a, na, b, nb, dp = 1) round((a/na) / (b/nb), dp)
+motif2_fold_enh_vs_prom <- .f(n_motif2_dist_enh, n_dist_enh,
+                              n_motif2_prom_nonanno, n_prom_nonanno)    #2.5
+motif2_fold_enh_vs_dist <- .f(n_motif2_dist_enh, n_dist_enh,
+                              n_motif2_dist_nonanno, n_dist_nonanno)    #1.4
+motif2_fold_pe_vs_pn    <- .f(n_motif2_prom_enh, n_prom_enh,
+                              n_motif2_prom_nonanno, n_prom_nonanno)    #1.7
+motif2_fold_pe_vs_dn    <- .f(n_motif2_prom_enh, n_prom_enh,
+                              n_motif2_dist_nonanno, n_dist_nonanno, 2) #0.97
+# High-confidence peak percentage (for §3.7.7)
+pct_high_conf <- round(100 * (n_dist_enh + n_prom_enh) / joint_n, 1) #27.5
+# ============================================================
+# SECTION 12, CME-motif2 inter-motif spacing (Figure 3.15)
+# Object: spacings, peaks_both
+# ============================================================
+n_peaks_both         <- length(peaks_both)            # 55
+spacing_median       <- median(spacings)              # 72
+spacing_min          <- min(spacings)                 # 2
+spacing_max          <- max(spacings)                 # 275
+n_close_apposition   <- sum(spacings <= 50)           # 17
+
+# ============================================================
+# SECTION 13, Per-chromosome table (Table 3.1), these are computed not hardcoded
+# Object: chr_distribution
+# ============================================================
+
+# ============================================================
+# RECORD computed values in results/reported_values.tsv
+# ============================================================
+
+# ---- Distal/proximal GO diagnostic values for results/reported_values.tsv ----
+# Objects come from the load-chipenrich-ch3-distalsplit loader chunk.
+stopifnot(exists("res_distal_bp_sig"), exists("res_prox_bp_sig"),
+          exists("n_distal_ds"), exists("n_promoter_ds"))
+
+# Top distal term (ordered by FDR ascending in the saved object)
+.dtop <- res_distal_bp_sig[1, ]
+dist_go_top_term <- as.character(.dtop$Description)            # e.g. "embryo development"
+dist_go_top_or   <- formatC(.dtop$Odds.Ratio, format = "f", digits = 2)
+dist_go_top_fdr  <- .dtop$FDR                                  # fmt_p() applied at write time
+
+# --- Motif2 functional-test scalars (TEST1 regression, TEST3 phyloP) --------
+AUX_CV <- file.path(PROJECT_DIR, "data/chapter3")
+t1 <- readRDS(file.path(AUX_CV, "test1_regression_binding.rds"))
+t3 <- readRDS(file.path(AUX_CV, "test3_phylop_conservation.rds"))
+if (!requireNamespace("sandwich", quietly = TRUE)) install.packages("sandwich")
+if (!requireNamespace("lmtest",   quietly = TRUE)) install.packages("lmtest")
+
+t1f <- summary(t1$full)$coefficients
+t1b <- summary(t1$binary)$coefficients
+m2_beta     <- round(t1f["n_motif2", "Estimate"], 2)
+m2_beta_ci  <- sprintf("%.2f", t1f["n_motif2", "Estimate"] + c(-1.96, 1.96) * t1f["n_motif2", "Std. Error"])
+m2_outcome_median <- sprintf("%.2f", median(t1$df$peak_score))
+m2_reg_p    <- t1f["n_motif2", "Pr(>|t|)"]
+m2_reg_p_hc <- lmtest::coeftest(t1$full,
+                 vcov. = sandwich::vcovHC(t1$full, type = "HC3"))["n_motif2", "Pr(>|t|)"]
+m2_bin_beta <- round(t1b["has_motif2", "Estimate"], 2)
+m2_bin_p    <- t1b["has_motif2", "Pr(>|t|)"]
+adjr_red    <- round(summary(t1$reduced)$adj.r.squared, 3)
+adjr_full   <- round(summary(t1$full)$adj.r.squared, 3)
+ppk <- t3$full$table; ppc <- t3$core$table
+m2_pp_n      <- nrow(ppk)
+flank_w      <- t3$flank_w
+m2_pp_motif  <- round(median(ppk$motif), 2)
+m2_pp_flank  <- round(median(ppk$flank), 2)
+m2_pp_diff   <- round(median(ppk$motif - ppk$flank), 2)
+m2_pp_propup <- round(100 * mean((ppk$motif - ppk$flank) > 0), 1)
+m2_pp_p      <- t3$full$wilcox$p.value
+core_med     <- round(median(ppc$core), 2)
+core_diff    <- round(median(ppc$core - ppc$flank), 2)
+core_p       <- t3$core$wilcox$p.value
+```
+
+```{r ch3-motif2-dbscan, eval=FALSE}
+# ============================================================
+# TOMTOM scan of Motif2 PWM (data/chapter3/STRCACTGARARAAA.meme) against combined Fly Factor Survey + JASPAR2024 CORE insects database; result written to results/reported_values.tsv
+# ============================================================
+
+qry <- file.path(PROJECT_DIR, "data/chapter3/STRCACTGARARAAA.meme")
+db  <- file.path(PROJECT_DIR, "reference/motif_databases/combined_drosophila.meme")
+ffs <- file.path(PROJECT_DIR, "reference/motif_databases/FLY/fly_factor_survey.meme")
+jas <- file.path(PROJECT_DIR,
+        "reference/motif_databases/JASPAR/JASPAR2024_CORE_insects_non-redundant_v2.meme")
+stopifnot(file.exists(qry), file.exists(ffs), file.exists(jas))
+
+# Rebuild the combined database (same concatenation as the MEME-ChIP step).
+if (!file.exists(db)) writeLines(c(readLines(ffs), readLines(jas)), db)
+n_db <- sum(grepl("^MOTIF", readLines(db)))            # 942 matrices
+
+# Run 1, canonical significance count. TOMTOM writes only matches <= thresh,
+# so an empty table == no significant match.
+oc_sig <- file.path(PROJECT_DIR, "data/chapter3/tomtom_motif2_vs_db_q05")
+system2("tomtom", c("-no-ssc","-thresh","0.05","-min-overlap","5",
+                    "-dist","pearson","-oc", oc_sig, qry, db))
+tt_sig <- read.delim(file.path(oc_sig, "tomtom.tsv"),
+                     comment.char = "#", check.names = FALSE)
+tt_sig <- tt_sig[!is.na(tt_sig$Query_ID) & tt_sig$Query_ID != "", ]
+n_hits <- nrow(tt_sig)                                 # expect 0
+
+# Run 2, nearest neighbour (relaxed, E-value scored) for the appendix only.
+oc_all <- file.path(PROJECT_DIR, "data/chapter3/tomtom_motif2_vs_db_all")
+system2("tomtom", c("-no-ssc","-thresh","10","-evalue","-min-overlap","5",
+                    "-dist","pearson","-oc", oc_all, qry, db))
+tt_all <- read.delim(file.path(oc_all, "tomtom.tsv"),
+                     comment.char = "#", check.names = FALSE)
+tt_all <- tt_all[!is.na(tt_all$Query_ID) & tt_all$Query_ID != "", ]
+tt_all <- tt_all[order(tt_all[["E-value"]]), ]
+
+stopifnot(n_hits == 0L)     # CANONICAL FACT: Motif2 matches no catalogued TF
+
+# ---- session objects consumed by the ch3-export chunk ----
+motif2_db_nmatrices <- n_db
+motif2_db_nhits     <- n_hits
+motif2_db_thresh    <- "0.05"
+motif2_db_nearestE  <- sprintf("%.1f", tt_all[["E-value"]][1])   # ~2.9
+
+cat(sprintf("Motif2 vs %d TF matrices: %d matches at q<%s; nearest %s E=%.2f\n",
+            n_db, n_hits, motif2_db_thresh,
+            tt_all$Target_ID[1], tt_all[["E-value"]][1]))
+```
+
+```{r ch3-export-computed-values, eval=FALSE}
+# ============================================================
+# Exports chapter 3 reported values via save_values(); run last, after all analysis chunks. Excludes 66 chapter 5 and 20+10 chapter 4 values.
+# ============================================================
+
+stopifnot(exists("save_values"),
+          length(joint_peaks_filt) == 614L) # canonical-fact check
+
+# The single-coefficient t-test and the nested F-test of the Motif2 dosage
+# regression are the same test on 1 df; assert the identity and a plausible
+# range for the p-value before recording it.
+local({
+  .p  <- summary(t1$full)$coefficients["n_motif2", "Pr(>|t|)"]
+  .av <- anova(t1$reduced, t1$full)
+  stopifnot(abs(.p - .av$`Pr(>F)`[2]) < 1e-12,   # same test, 1 df
+            .p > 1e-6, .p < 0.05)                # plausible for n = 614
+})
+
+# ---- fmt_p: safe re-use if already defined in session ----
+if (!exists("fmt_p")) {
+  fmt_p <- function(p, digits = 2) {
+    if (is.na(p)) return("NA")
+    if (p == 0)   return("< 1e-300")
+    s <- formatC(p, format = "e", digits = digits)
+    parts <- strsplit(s, "e")[[1]]
+    paste0(parts[1], "e", as.integer(parts[2]))
+  }
+}
+
+ch3_vals <- list(
+
+  # ---- Section 1: Peak counts ----
+  trhPeaks              = length(Trh_clean),           # 1033
+  tgoPeaks              = length(Tgo_clean),           # 1403
+  jointPeaks            = length(joint_peaks_filt),    # 614, canonical
+  trhJointPeaks         = trh_joint_n,                 # 614 distinct Trh peaks
+  tgoJointPeaks         = tgo_joint_n,                 # 609 distinct Tgo peaks
+  tgoSpanningPeaks      = tgo_spanning_n,              # 5 Tgo peaks spanning two Trh peaks
+  trhPctJoint           = trh_pct_joint,               # 59.4
+  tgoPctJoint           = tgo_pct_joint,               # 43.4
+  trhUniquePeaks        = trh_unique_n,                # 419
+
+  # ---- Section 2: Trh/Tgo overlap permutation test ----
+  permObsOverlap        = perm_obs_overlap,            # 614
+  permZscore            = perm_zscore,                 # 114.58
+  permPval              = fmt_p(perm_pval_raw),        # 2.00e-4
+  permN                 = perm_n,                      # 5000
+  permEv                = perm_ev95,                   # 35
+  permFold              = perm_fold,                   # 23
+
+  # ---- Section 3: Enhancer overlap permutation (regioneR) ----
+  enhObsAll             = enh_obs_all,
+  enhObsPromoter        = enh_obs_promoter,
+  enhObsDistal          = enh_obs_distal,
+  enhNullMeanAll        = enh_null_mean_all,
+  enhNullSdAll          = enh_null_sd_all,
+  enhZAll               = enh_z_all,
+  enhPAll               = enh_p_all,
+  enhNullMeanProm       = enh_null_mean_prom,
+  enhNullSdProm         = enh_null_sd_prom,
+  enhZProm              = enh_z_prom,
+  enhPProm              = enh_p_prom,
+  enhNullMeanDist       = enh_null_mean_dist,
+  enhNullSdDist         = enh_null_sd_dist,
+  enhZDist              = enh_z_dist,
+  enhPDist              = enh_p_dist,
+
+  # ---- Section 4: Reference gene set ----
+  tsSgTotal             = ts_sg_total,
+  tsSgEntrezN           = ts_sg_entrez_n,
+  tsSgUnmapped          = ts_sg_unmapped_n,
+  compEntrezN           = comp_entrez_n,           # 23030, read off the geneset file
+  ceTrachModelledN      = ce_trach_modelled_n,     # 1986, after ChIP-Enrich locus definition
+  ceCompModelledN       = ce_comp_modelled_n,      # 11495
+
+  # ---- Section 5: Hypergeometric and permutation (TS/SG vs peaks) ----
+  nearbyGenesN          = nearby_genes_n,
+  overlapN              = overlap_n,
+  hyperFold             = hyper_fold,
+  hyperPval             = hyper_p_fmt,
+  permObsTsg            = perm_obs_tsg,
+  permNullMeanTsg       = perm_null_mean_tsg,
+  permNullSdTsg         = perm_null_sd_tsg,
+  permZTsg              = perm_z_tsg,
+  permPTsg              = perm_p_tsg_fmt,
+  permNTsg              = perm_n_tsg,
+
+  # ---- Section 6: Gene length bias ----
+  medianTsgLength       = median_tsg_length,
+  medianOtherLength     = median_other_length,
+  lengthFold            = length_fold,
+  wilcoxW               = formatC(wilcox_W, format = "f", big.mark = "", digits = 0),
+
+  # ---- Section 7: ChIP-Enrich (Table 3.2) ----
+  ceORTrach             = ce_OR_trach,
+  cePTrach              = fmt_p(ce_p_trach),
+  ceORComp              = ce_OR_comp,
+  cePeakGenesTrach      = ce_peakgenes_trach,
+  cePeakGenesComp       = ce_peakgenes_comp,
+  ceORfisher            = ce_OR_fisher,
+  cePfisher             = fmt_p(ce_p_fisher),
+
+  # ---- Section 8: Regulatory context (Figure 3.11) ----
+  nPromNonAnno          = n_prom_nonanno,
+  nPromEnh              = n_prom_enh,
+  nDistEnh              = n_dist_enh,
+  nDistNonAnno          = n_dist_nonanno,
+  pctPromNonAnno        = pct_prom_nonanno,
+  pctPromEnh            = pct_prom_enh,
+  pctDistEnh            = pct_dist_enh,
+  pctDistNonAnno        = pct_dist_nonanno,
+  pctPromoterTotal      = pct_promoter_total,
+
+  # ---- Section 9: CME analysis ----
+  nCmePos               = n_cme_pos,
+  nCmeNeg               = n_cme_neg,
+  pctCmePos             = pct_cme_pos,
+  pctCmeNeg             = pct_cme_neg,
+  cmeWilcoxP            = round(cme_wilcox_p, 3),
+
+  # ---- Section 10: Signal context comparison ----
+  nPromoterSignal       = n_promoter_signal,
+  nDistalEnhSignal      = n_distal_enh_signal,
+  signalWilcoxP         = fmt_p(signal_wilcox_p),
+
+  # ---- Section 11: Motif2 enrichment (distal vs promoter) ----
+  nMotifThreeTotal      = n_motif2_total,
+  pctMotifThreeTotal    = pct_motif2_total,
+  nMotifThreeDistEnh    = n_motif2_dist_enh,
+  nMotifThreePromEnh    = n_motif2_prom_enh,
+  nMotifThreePromNon    = n_motif2_prom_nonanno,
+  nMotifThreeDistNon    = n_motif2_dist_nonanno,
+  pctMotifThreeDistEnh  = pct_motif2_dist_enh,
+  pctMotifThreePromEnh  = pct_motif2_prom_enh,
+  pctMotifThreePromNon  = pct_motif2_prom_nonanno,
+  pctMotifThreeDistNon  = pct_motif2_dist_nonanno,
+  motifThreeFisherP     = fmt_p(motif2_fisher_p),
+  motifTwoFoldEnhVsProm = motif2_fold_enh_vs_prom,
+  motifTwoFoldEnhVsDist = motif2_fold_enh_vs_dist,
+  motifTwoFoldPromEnhVsPromNon = motif2_fold_pe_vs_pn,
+  motifTwoFoldPromEnhVsDistNon = motif2_fold_pe_vs_dn,
+  pctHighConfPeaks      = pct_high_conf,
+
+  # ---- Section 12: CME-Motif2 spacing ----
+  nPeaksBoth            = n_peaks_both,
+  spacingMedian         = spacing_median,
+  spacingMin            = spacing_min,
+  spacingMax            = spacing_max,
+  nCloseApposition      = n_close_apposition,
+
+  # ---- Section 14: CME-stratified Motif2 (Figure 3.16) ----
+  cmePosMotifTwoN       = cme_pos_m2_n,
+  cmeNegMotifTwoN       = cme_neg_m2_n,
+  cmePosMotifTwoPct     = cme_pos_m2_pct,
+  cmeNegMotifTwoPct     = cme_neg_m2_pct,
+  cmePosTotal           = cme_pos_total,
+  cmeNegTotal           = cme_neg_total,
+  cmeMotifTwoOR         = cme_m2_OR,
+  cmeMotifTwoCIlo       = sprintf("%.2f", ft_cme_m2$conf.int[1]),
+  cmeMotifTwoCIhi       = sprintf("%.2f", ft_cme_m2$conf.int[2]),
+  cmeMotifTwoPval       = fmt_p(cme_m2_pval),
+
+  # ---- Section 15: Trh-unique / Tgo-unique Motif2 (Figure 3.17) ----
+  trhUniqueTotalN       = trh_unique_n_total,
+  tgoUniqueTotalN       = tgo_unique_n_total,
+  trhUniqueMotifTwoN    = trh_unique_m2_n,
+  tgoUniqueMotifTwoN    = tgo_unique_m2_n,
+  trhUniqueMotifTwoPct  = trh_unique_m2_pct,
+  tgoUniqueMotifTwoPct  = tgo_unique_m2_pct,
+  trhUniqueMotifTwoOR   = ft_trh_OR,
+  tgoUniqueMotifTwoOR   = ft_tgo_OR,
+  trhUniqueMotifTwoP    = fmt_p(ft_trh_p),
+  tgoUniqueMotifTwoP    = fmt_p(ft_tgo_p),
+
+  # ---- Section 16: Full-PWM FIMO specificity (Figure 3.17) ----
+  mspecEnhPct           = mspec_enh_pct,
+  mspecEnhN             = mspec_n_enh_total,
+  mspecEnhPosN          = mspec_n_enh_m2_pos,
+  jointMotifTwoPct      = joint_m2_pct,
+  jointMotifTwoN        = joint_m2_n,
+  mspecPeaksPct         = joint_m2_pct,
+  mspecPeaksVsEnhOR     = mspec_peaks_vs_enh_or,     # 1.28
+  mspecPeaksVsEnhP      = fmt_p(mspec_peaks_vs_enh_p), # 3.52e-3
+
+  # ---- TEST1: Motif2 deconfounding regression ----
+  motifTwoBeta          = m2_beta,
+  motifTwoRegP          = fmt_p(m2_reg_p),
+  motifTwoRegPHC        = fmt_p(m2_reg_p_hc),
+  motifTwoRegBetaCIlo   = m2_beta_ci[1],
+  motifTwoRegBetaCIhi   = m2_beta_ci[2],
+  motifTwoRegOutcomeMedian = m2_outcome_median,
+  motifTwoBinBeta       = m2_bin_beta,
+  motifTwoBinP          = fmt_p(m2_bin_p),
+  adjRReduced           = adjr_red,
+  adjRFull              = adjr_full,
+
+  # ---- TEST3: phyloP conservation ----
+  nMotifTwoPhyloP       = m2_pp_n,
+  flankWidth            = flank_w,
+  motifTwoPhyloPMedian  = m2_pp_motif,
+  flankPhyloPMedian     = m2_pp_flank,
+  motifTwoPhyloPDiff    = m2_pp_diff,
+  motifTwoPhyloPPropUp  = m2_pp_propup,
+  motifTwoPhyloPP       = fmt_p(m2_pp_p),
+  coreCactgPhyloP       = core_med,
+  coreCactgPhyloPDiff   = core_diff,
+  coreCactgPhyloPP      = fmt_p(core_p),
+
+  # ---- Motif2 database-novelty scan (TOMTOM vs known Drosophila TFs) ----
+  nMotifTwoDbMatrices   = motif2_db_nmatrices,   # 942
+  nMotifTwoDbHits       = motif2_db_nhits,       # 0
+  motifTwoDbThresh      = motif2_db_thresh,      # 0.05
+  motifTwoDbNearestE    = motif2_db_nearestE,    # 2.9
+
+  # ---- Distal/proximal GO diagnostic ----
+  nProxPeaksGO          = n_promoter_ds,
+  nDistPeaksGO          = n_distal_ds,
+  nProxGoSigTerms       = nrow(res_prox_bp_sig),
+  nDistGoSigTerms       = nrow(res_distal_bp_sig),
+  distGoTopTerm         = dist_go_top_term,
+  distGoTopOR           = dist_go_top_or,
+  distGoTopFDR          = fmt_p(dist_go_top_fdr)
+
+)
+
+save_values("ch3", ch3_vals)
+```
+
+# Motif2 attribution: heterodimers vs. enhancers in general
+
+The analyses above compare Trh/Tgo peaks against an enhancer catalogue.
+That design cannot separate two accounts of the Motif2 enrichment: that
+Motif2 is associated with the heterodimers, or that it is a compositional
+feature of distal embryonic enhancers which the heterodimers happen to
+bind. The partition test below separates them, by taking ONE enhancer
+catalogue and splitting it only by whether a heterodimer peak overlaps the
+enhancer. Sequence class, interval length and scan parameters are then
+constant by construction.
+
+Two conventions are load-bearing and are enforced in the script:
+
+1. **Equal 201 bp windows for every scanned set.** The joint peaks average
+   ~420 bp and the annotated enhancers ~860 bp; a longer sequence carries a
+   higher per-sequence hit probability irrespective of biology, which
+   understates the enrichment.
+2. **`p < 1e-4` only, never FIMO's q.** FIMO computes q within a scan, so
+   the burden scales with set size: the 35797-enhancer catalogue retains
+   19% of its p-passing hits under `q < 0.05` while a 614-peak set retains
+   88%. A q-threshold is therefore not comparable across sets of different
+   size, and using one penalises the large comparator.
+
+The analysis lives in its own script rather than inline, because it reads
+all four heterodimer peak sets and belongs to no single chapter. It writes
+the attribution tables (`data/motif2_attribution/`) and the figure
+`results/figures/fig4_12_motif2_attribution.png` used in
+the Chapter 4 section on Motif2 attribution (Chapter 4, because the partition
+test requires the Sim/Dys/Sima peak sets and the non-bHLH-PAS controls
+that Chapter 4 introduces).
+
+```{r motif2-attribution, eval=FALSE}
+# Sources: data/final_peaks IDR peak sets (all four heterodimers),
+#          data/chapter3/enhancers_genomewide.fa,
+#          data/ctrl_tf/fimo/* (Chapter 4 control scans)
+# Outputs: data/motif2_attribution/*.csv
+#          results/figures/fig4_12_motif2_attribution.png
+# Run from the repository root:
+#   Rscript 04_chapter_analyses/chapter4/ch4_motif2_attribution.R
+```
+
+```{r motif2-attribution-export, eval=FALSE}
+# Lists which attribution values are recorded in results/reported_values.tsv.
+# The pooled-attribution counts, odds ratios and p-values are in
+# data/motif2_attribution/pooled_attribution_tests.csv; the enhancer/factor
+# shares (attrEnh*, attrFac*) are recorded by
+# 04_chapter_analyses/chapter4/ch4_motif2_nonenh_baseline.R.
+A <- file.path(PROJECT_DIR, "data/motif2_attribution")
+stopifnot(file.exists(file.path(A, "pooled_attribution_tests.csv")))
+rv <- read.delim(VALUES_FILE, colClasses = "character", quote = "")
+need <- c("attrPooledOR", "attrPooledCIlo", "attrPooledCIhi", "attrPooledP",
+          "attrPooledBoundN", "attrPooledBoundPct", "attrUnboundN",
+          "attrUnboundPct", "attrEnhPctShare", "attrFacPctShare",
+          "attrEnhOR", "attrFacOR", "attrWindowBp",
+          "attrTrhOR", "attrSimOR", "attrDysOR", "attrSimaOR",
+          "mspecPeaksPctMatched", "mspecEnhPctMatched", "mspecORMatched")
+missing <- setdiff(need, rv$name)
+if (length(missing))
+  message("attribution values not recorded in reported_values.tsv: ",
+          paste(missing, collapse = ", "))
+cat(sprintf("attribution values present: %d/%d\n", length(need) - length(missing),
+            length(need)))
+```
+

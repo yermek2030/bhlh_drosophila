@@ -1,0 +1,7 @@
+"Comparison","Interaction_OR","CI_lo","CI_hi","p"
+"Trh/Tgo vs Sim/Tgo",0.701,0.351,1.403,0.316
+"Trh/Tgo vs Dys/Tgo",1.355,0.732,2.509,0.333
+"Trh/Tgo vs Sima/Tgo",1.153,0.538,2.469,0.714
+"Sim/Tgo vs Dys/Tgo",1.933,0.965,3.871,0.063
+"Sim/Tgo vs Sima/Tgo",1.644,0.719,3.758,0.238
+"Dys/Tgo vs Sima/Tgo",0.851,0.397,1.824,0.678

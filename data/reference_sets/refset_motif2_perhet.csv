@@ -1,0 +1,5 @@
+"heterodimer","n_peaks","n_exclusive","motif2_pct_exclusive","motif2_pct_shared","fisher_p","power_vs_1.5x","power_se"
+"Trh",614,79,22.78,29.91,0.232,43.1,0.22
+"Sim",355,25,36,33.64,0.828,17.6,0.17
+"Dys",870,363,30.58,32.94,0.507,94.5,0.1
+"Sima",296,12,33.33,31.69,1,6.3,0.11

@@ -1,0 +1,2 @@
+"n_inpeak","n_background","delta_inpeak","delta_background","delta_ratio","wilcox_p","tailpos_OR","tailpos_p","offreg_OR","offreg_p"
+165,22925,11.02,3.88,2.84,1.24e-15,3.86,2.12e-12,1.03,0.624

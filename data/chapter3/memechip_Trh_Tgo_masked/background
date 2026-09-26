@@ -1,0 +1,7 @@
+# 0-order Markov frequencies from file data/chapter3/memechip_Trh_Tgo_masked/Trh_Tgo_joint_peaks_filt_repeatmasked.fa
+# seqs: 614    min: 241    max: 1160    avg: 416.1    sum: 255496    alph: DNA
+# order 0
+A 3.057e-01
+C 1.943e-01
+G 1.943e-01
+T 3.057e-01

@@ -1,0 +1,17 @@
+DIMER  ORDER  RANK  CONSENSUS                  E_VALUE     
+Trh    0      6     CACTGAAAAAAATG             1.9e-001    
+Trh    2      2     VTRCACTGAGAGAAAWDNNN       4.9e-002    
+Trh    3      6     ACACTGAGARAAA              4.6e-001    
+Trh    4      3     STRCACTGAGARAAAWDNNN       3.8e-001    
+Sim    0      1     RSTRCACTGAGARAAAWDN        3.9e-002    
+Sim    2      2     TRCACTGARARAAAWDNN         5.5e-002    
+Sim    3      1     TRCACTGARARAAAWD           3.1e-002    
+Sim    4      2     RTRCACTGAGARAAAWDNND       2.0e+000    
+Dys    0      1     STRCACTGARARAAAWWDN        2.4e-008    
+Dys    2      1     STRCACTGARARAAAWD          5.9e-007    
+Dys    3      1     TRCACTGARARAAAWDD          1.4e-007    
+Dys    4      1     STRCACTGARARAAAWDDND       2.5e-006    
+Sima   0      4     RCACTGARARAAAWWR           2.0e-001    
+Sima   2      4     NSTRCACTGARARAAAHDVN       3.3e-001    
+Sima   3      2     GTRCACTGARARAAAWRVD        2.3e-001    
+Sima   4      1     TACACTGAAARAAAW            1.2e-002    

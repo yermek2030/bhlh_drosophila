@@ -1,0 +1,4 @@
+
+# FIMO (Find Individual Motif Occurrences): Version 5.5.5 compiled on Mar 10 2026 at 06:53:45
+# The format of this file is described at https://meme-suite.org/meme/doc/fimo-output-format.html#tsv_results.
+# fimo --verbosity 1 --oc data/chapter3/memechip_Trh_Tgo_masked/fimo_out_3 --bgfile data/chapter3/memechip_Trh_Tgo_masked/background --motif 1-GCCAAA data/chapter3/memechip_Trh_Tgo_masked/streme_out/streme.xml data/chapter3/memechip_Trh_Tgo_masked/Trh_Tgo_joint_peaks_filt_repeatmasked.fa

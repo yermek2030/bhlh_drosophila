@@ -1,0 +1,10 @@
+"Reference","Heterodimer","Stratum","Context","N_peaks","Observed","Null_mean","Null_SD","Z_score","p_emp","N_perm"
+"GaoQian_EnhancerAtlas","Trh/Tgo","all","GaoQian_EnhancerAtlas | Trh/Tgo all",614,169,202.13,11.19,-2.96,0.0025994801039792,5000
+"GaoQian_EnhancerAtlas","Trh/Tgo","promoter","GaoQian_EnhancerAtlas | Trh/Tgo promoter",468,55,154.46,9.99,-9.95,0.0001999600079984,5000
+"GaoQian_EnhancerAtlas","Trh/Tgo","distal","GaoQian_EnhancerAtlas | Trh/Tgo distal",146,114,46.79,5.77,11.64,0.0001999600079984,5000
+"VT_active_any","Trh/Tgo","all","VT_active_any | Trh/Tgo all",614,34,35.06,5.55,-0.19,0.487302539492102,5000
+"VT_active_any","Trh/Tgo","promoter","VT_active_any | Trh/Tgo promoter",468,15,27.05,5.04,-2.39,0.00739852029594081,5000
+"VT_active_any","Trh/Tgo","distal","VT_active_any | Trh/Tgo distal",146,19,8.02,2.82,3.89,0.0025994801039792,5000
+"VT_active_stg9_16","Trh/Tgo","all","VT_active_stg9_16 | Trh/Tgo all",614,34,34.34,5.45,-0.06,0.535292941411718,5000
+"VT_active_stg9_16","Trh/Tgo","promoter","VT_active_stg9_16 | Trh/Tgo promoter",468,15,26.53,5.04,-2.29,0.00739852029594081,5000
+"VT_active_stg9_16","Trh/Tgo","distal","VT_active_stg9_16 | Trh/Tgo distal",146,19,7.85,2.76,4.04,0.0025994801039792,5000

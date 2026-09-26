@@ -1,0 +1,9 @@
+Query_ID	Target_ID	Optimal_offset	p-value	E-value	q-value	Overlap	Query_consensus	Target_consensus	Orientation
+1-CGCTGCCAR	STRCACTGARARAAA	3	0.0314202	0.0314202	0.0628404	9	CGCTGCCAG	GTACACTGAGAAAAA	+
+3-AGAGAGAGAGAGAG	STRCACTGARARAAA	2	0.0136201	0.0136201	0.0272403	13	AGAGAGAGAGAGAG	GTACACTGAGAAAAA	+
+4-VGTRCACTGARARAAAW	STRCACTGARARAAA	-1	1.14277e-11	1.14277e-11	2.28554e-11	15	AGTACACTGAGAGAAAA	GTACACTGAGAAAAA	+
+6-SCACWGTGS	STRCACTGARARAAA	2	0.0445995	0.0445995	0.0445995	9	GCACTGTGC	GTACACTGAGAAAAA	+
+
+# Tomtom (Motif Comparison Tool): Version 5.5.9 compiled on May 27 2026 at 12:34:00
+# The format of this file is described at https://meme-suite.org/meme/doc/tomtom-output-format.html.
+# tomtom -no-ssc -oc data/motif2_robustness/tomtom_halfA_vs_m2 -verbosity 1 -min-overlap 5 -dist pearson -thresh 0.5 data/motif2_robustness/streme_halfA/streme.txt data/chapter3/STRCACTGARARAAA.meme

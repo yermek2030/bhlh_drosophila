@@ -1,0 +1,260 @@
+---
+title: "Alignment and quality control: Sima ChIP-seq"
+author: "Yermek Aiten"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{bash, eval=FALSE}
+# SIMA ChIP-seq Pipeline, Drosophila melanogaster (dm6)
+# Transcription factor: Similar (Sima), bHLH-PAS activator (HIF-α homologue)
+# Heterodimer partner: Tango (Tgo), analysed in Chapter 3
+# Replicates: 2 biological replicates + 1 matched input control
+# Library type: SINGLE-END throughout (replicates and control)
+# IDR strategy: single biological replicate IDR (rep1 vs rep2); n=2
+# ENCODE experiment: ENCSR390QUD (White lab, U. Chicago; embryo, mixed stages)
+set -euo pipefail
+```
+
+```{bash, eval=FALSE}
+# SETTING UP DIRECTORY STRUCTURE
+mkdir -p 03_bam 04_qc 07_blacklist 08_qc 09_peaks 10_idr 11_final
+mkdir -p $PROJECT_DIR/tmp
+```
+
+```{bash, eval=FALSE}
+# STAGE 1, ALIGNMENT (single-end: -U flag)
+
+# ENCFF048IYN = SIMA rep1
+# ENCFF309ZFF = SIMA rep2
+
+bowtie2 -x dm6 \
+-U 01_fastqc/sima/ENCFF048IYN.fastq.gz \
+-S 03_bam/SIMA_rep1.sam -p 8
+
+bowtie2 -x dm6 \
+-U 01_fastqc/sima/ENCFF309ZFF.fastq.gz \
+-S 03_bam/SIMA_rep2.sam -p 8
+```
+
+```{bash, eval=FALSE}
+# SAM -> sorted BAM
+samtools view -bS 03_bam/SIMA_rep1.sam | samtools sort -o 03_bam/SIMA_rep1.bam
+samtools view -bS 03_bam/SIMA_rep2.sam | samtools sort -o 03_bam/SIMA_rep2.bam
+
+rm 03_bam/SIMA_rep1.sam 03_bam/SIMA_rep2.sam
+```
+
+```{bash, eval=FALSE}
+# STAGE 2, ADD READ GROUPS
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+I=03_bam/SIMA_rep1.bam \
+O=03_bam/SIMA_rep1.RG.bam \
+RGID=SIMA_rep1 RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=SIMA_rep1
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+I=03_bam/SIMA_rep2.bam \
+O=03_bam/SIMA_rep2.RG.bam \
+RGID=SIMA_rep2 RGLB=lib1 RGPL=ILLUMINA RGPU=unit2 RGSM=SIMA_rep2
+```
+
+```{bash, eval=FALSE}
+# Sort after read groups
+samtools sort -@ 8 -o 03_bam/SIMA_rep1.RG.sorted.bam 03_bam/SIMA_rep1.RG.bam
+samtools sort -@ 8 -o 03_bam/SIMA_rep2.RG.sorted.bam 03_bam/SIMA_rep2.RG.bam
+```
+
+```{bash, eval=FALSE}
+# STAGE 3, MARK AND REMOVE DUPLICATES
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+MarkDuplicates \
+I=03_bam/SIMA_rep1.RG.sorted.bam \
+O=03_bam/SIMA_rep1.rmdup.bam \
+M=04_qc/SIMA_rep1.dup_metrics.txt \
+REMOVE_DUPLICATES=true \
+ASSUME_SORTED=true
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+MarkDuplicates \
+I=03_bam/SIMA_rep2.RG.sorted.bam \
+O=03_bam/SIMA_rep2.rmdup.bam \
+M=04_qc/SIMA_rep2.dup_metrics.txt \
+REMOVE_DUPLICATES=true \
+ASSUME_SORTED=true
+```
+
+```{bash, eval=FALSE}
+# STAGE 4, FILTER BAM (single-end flags)
+# -q 30 : MAPQ \>= 30
+# no -f 2 : omitted, -f 2 requires properly paired reads; invalid for SE
+# -F 1804 : exclude unmapped, not primary alignment, duplicate, supplementary
+
+for REP in 1 2
+do
+samtools view -b \
+-q 30 \
+-F 1804 \
+03_bam/SIMA_rep${REP}.rmdup.bam \
+> 03_bam/SIMA_rep${REP}.filtered.bam
+
+samtools index 03_bam/SIMA_rep${REP}.filtered.bam
+done
+```
+
+```{bash, eval=FALSE}
+# STAGE 5, BLACKLIST REMOVAL (uses filtered.bam)
+
+for REP in 1 2
+do
+bedtools intersect -v \
+-a 03_bam/SIMA_rep${REP}.filtered.bam \
+-b dm6-blacklist.v2.bed \
+> 07_blacklist/SIMA_rep${REP}.clean.bam
+
+samtools index 07_blacklist/SIMA_rep${REP}.clean.bam
+done
+```
+
+```{bash, eval=FALSE}
+# STAGE 6, CONTROL PROCESSING (single-end: ENCFF936AOH)
+bowtie2 -x dm6 \
+-U 01_fastqc/sima/ENCFF936AOH.fastq.gz \
+-S 03_bam/SIMA_control.sam -p 8
+
+samtools view -bS 03_bam/SIMA_control.sam \
+| samtools sort -o 03_bam/SIMA_control.bam
+
+rm 03_bam/SIMA_control.sam
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+AddOrReplaceReadGroups \
+I=03_bam/SIMA_control.bam \
+O=03_bam/SIMA_control.RG.bam \
+RGID=SIMA_ctrl RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=SIMA_ctrl
+
+samtools sort -@ 8 -o 03_bam/SIMA_control.RG.sorted.bam 03_bam/SIMA_control.RG.bam
+
+picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+MarkDuplicates \
+I=03_bam/SIMA_control.RG.sorted.bam \
+O=03_bam/SIMA_control.rmdup.bam \
+M=04_qc/SIMA_control.dup_metrics.txt \
+REMOVE_DUPLICATES=true \
+ASSUME_SORTED=true
+```
+
+```{bash, eval=FALSE}
+# Filter control (single-end: no -f 2)
+samtools view -b -q 30 -F 1804 \
+03_bam/SIMA_control.rmdup.bam \
+> 03_bam/SIMA_control.filtered.bam
+```
+
+```{bash, eval=FALSE}
+# Blacklist removal for control
+bedtools intersect -v \
+-a 03_bam/SIMA_control.filtered.bam \
+-b dm6-blacklist.v2.bed \
+> 07_blacklist/SIMA_control.clean.bam
+samtools index 07_blacklist/SIMA_control.clean.bam
+```
+
+```{bash, eval=FALSE}
+# STAGE 7, FRAGMENT SIZE ESTIMATION WITH SPP
+# run_spp.R derives the cross-correlation fragment size for single-end data
+# Output is used to set --extsize in MACS3 (--shift is not used in this workflow;
+# MACS3 --nomodel with --extsize shifts reads by extsize/2 in the 5' direction
+# of each strand automatically, which is appropriate for TF ChIP-seq)
+run_spp.R \
+-c=07_blacklist/SIMA_rep1.clean.bam \
+-s=-100:5:600 \
+-out=04_qc/SIMA_rep1_spp.clean.txt
+
+run_spp.R \
+-c=07_blacklist/SIMA_rep2.clean.bam \
+-s=-100:5:600 \
+-out=04_qc/SIMA_rep2_spp.clean.txt
+
+run_spp.R \
+-c=07_blacklist/SIMA_control.clean.bam \
+-s=-100:5:600 \
+-out=04_qc/SIMA_control_spp.clean.txt
+# Expected: fragment size ~180-230 bp based on SPP on shared White-lab protocol
+# Read length is 50 nt (ENCODE table): RSC may be low, similar to TRH (Tag 0/1 expected)
+```
+
+```{bash, eval=FALSE}
+# STAGE 8, MERGE REPLICATES INTO POOLED BAM (for signal assignment later)
+samtools merge -f 07_blacklist/SIMA_merged.clean.bam \
+07_blacklist/SIMA_rep1.clean.bam \
+07_blacklist/SIMA_rep2.clean.bam
+samtools index 07_blacklist/SIMA_merged.clean.bam
+```
+
+```{bash, eval=FALSE}
+# STAGE 9, QC: REPLICATE CORRELATION
+mkdir -p 08_qc
+
+multiBamSummary bins \
+--bamfiles 07_blacklist/SIMA_rep1.clean.bam \
+07_blacklist/SIMA_rep2.clean.bam \
+-o 08_qc/SIMA.npz
+plotCorrelation \
+-in 08_qc/SIMA.npz \
+--corMethod spearman \
+--whatToPlot heatmap \
+--plotFile 08_qc/SIMA_spearman_heatmap.pdf \
+--outFileCorMatrix 08_qc/SIMA_spearman_matrix.txt
+plotCorrelation \
+-in 08_qc/SIMA.npz \
+--corMethod spearman \
+--whatToPlot scatterplot \
+--plotFile 08_qc/SIMA_spearman_scatter.pdf
+#Spearman interpretation: \>= 0.8 good, 0.6-0.8 moderate, \< 0.6 problematic
+#plotCorrelation --outFileCorMatrix
+	'SIMA_rep1.clean.bam'	'SIMA_rep2.clean.bam'
+'SIMA_rep1.clean.bam'	1.0000	0.9817
+'SIMA_rep2.clean.bam'	0.9817	1.0000
+```
+
+**SPP fragment-size estimation (QC summary)**
+
+| Sample | Read length | Fragment est. | `--extsize` | NSC | RSC | Quality flag |
+|---------|---------|---------|---------|---------|---------|---------|
+| SIMA_rep1 | 49 bp | 230 bp | 230 | 1.006 | 0.724 | Tag 0 (low RSC) |
+| SIMA_rep2 | 49 bp | 220 bp | 220 | 1.010 | 1.032 | Tag 1 |
+| **Pooled** |  |  | **225** |  |  |  |
+
+One cannot run IDR on two peak files that were called with different fragment size models — IDR assumes the same peak-calling conditions across both samples. A single consensus `--extsize = 225` (mean of rep1 230 bp and rep2 220 bp) will be used for MACS3, matching the TRH Chapter 3 approach (where `--extsize = 210` was derived as the mean of 205 and 215 bp). `--shift` is not passed to MACS3; the default behaviour of `--nomodel --extsize N` shifts reads by N/2 toward the fragment centre, which is the standard configuration for TF ChIP-seq.
+
+SIMA_rep1 RSC of 0.724 (Tag 0) is below the ENCODE-encouraged threshold of 0.8, matching the pattern seen in TRH (RSC 0.78 / 0.64, both Tag 0). This quality flag is a consequence of the short 49 bp SE reads and modest depth characteristic of the White lab/U. Chicago ChIP protocol and does not invalidate downstream IDR analysis, but will be acknowledged in the QC discussion. Control SPP estimates (150 bp fragment, RSC 0.604) are disregarded — input controls produce cross-correlation artefacts because they lack real enrichment signal.
+
+```{bash, eval=FALSE}
+# STAGE 10, FINGERPRINT (cumulative enrichment plot)
+mkdir -p 04_qc/fingerprint
+
+plotFingerprint \
+  -b 07_blacklist/SIMA_rep1.clean.bam \
+     07_blacklist/SIMA_rep2.clean.bam \
+     07_blacklist/SIMA_control.clean.bam \
+  --plotFile 04_qc/fingerprint/SIMA_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/SIMA_fingerprint.tab \
+  --numberOfSamples 500000 \
+  --extendReads 225 \
+  -p 8
+# --extendReads 225 = pooled SPP estimate from Stage 7 (mean of rep1 230 bp and rep2 220 bp)
+```
+
+Next steps:
+
+1. `01_chipseq_processing/macs3_threshold_comparison/threshold_comparison_sima.sh` (MACS3 p-value threshold)
+2. `01_chipseq_processing/peak_calling_idr/production_peaks_sima.sh` (peak calling, IDR, consensus)
+3. `01_chipseq_processing/pseudoreplicates/pseudoreplicate_idr_sima.sh` (pseudoreplicate IDR)

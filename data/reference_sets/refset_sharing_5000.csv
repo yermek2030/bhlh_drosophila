@@ -1,0 +1,4 @@
+"scenario","pct_shared","sd","fold","p_emp","n_perm"
+"observed",87.13,NA,NA,NA,NA
+"genome-randomised",1.31,0.45,66.5,2e-04,5000
+"promoter-matched",9.41,1.14,9.3,2e-04,5000

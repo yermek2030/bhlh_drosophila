@@ -1,0 +1,2 @@
+"stratum","n","with_motif2","pct","meanGC","window_bp","threshold"
+"non-enhancer, non-peak background",5000,335,6.7,42.15,201,"p < 1e-4"

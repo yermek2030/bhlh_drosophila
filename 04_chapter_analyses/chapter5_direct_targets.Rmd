@@ -1,0 +1,2604 @@
+---
+title: "Chapter 5 — Direct targets of Trh/Tgo and convergence with Ribbon"
+author: "Yermek Aiten"
+output: html_document
+---
+
+Direct targets of the Trh/Tgo heterodimer (Chapter 5). The `ch5-bootstrap` chunk
+rebuilds the Trh/Tgo joint peak set (614 peaks) from the two IDR peak files, so
+this file needs no objects from the Chapter 3 or Chapter 4 analyses.
+
+- The direct-target set is the intersection of genes near Trh/Tgo peaks with the
+  genes differentially expressed after *trh* RNAi in the modERN RNA-seq data of
+  Fisher et al. (Table S43).
+- The in-house *trh* RNAi microarray (FlyChip) is compared with that RNA-seq by
+  genome-wide rank concordance and direction-validated subsets.
+- The direct-target set is compared with the published Ribbon direct targets
+  (Loganathan et al. 2016), and with the GSE28780 expression data (Chung et al. 2011).
+
+Inputs are read from `data/final_peaks/`, `data/chapter5/` and
+`data/reference_gene_lists/`; tables are written to `data/chapter5/`, figures to
+`results/figures/`, and the values quoted in the text to
+`results/reported_values.tsv` (final chunk).
+
+```{r ch5-bootstrap, include=TRUE, eval=TRUE}
+# ============================================================
+#  CHAPTER 5 SELF-CONTAINED BOOTSTRAP
+#  Defines: PROJECT_DIR, good_chr, FIGURES_DIR, fmt_p,
+#           Trh_Tgo_joint_filt (614 peaks, rebuilt from raw narrowPeak)
+#  No objects from Chapter 3 or Chapter 4 are required in memory.
+# ============================================================
+
+# ---- 1. Project paths ----
+# Everything is derived from PROJECT_DIR.
+## Repository root: the environment variable PROJECT_DIR, or the working directory.
+PROJECT_DIR <- normalizePath(Sys.getenv("PROJECT_DIR", unset = "."), mustWork = TRUE)
+if (!file.exists(file.path(PROJECT_DIR, "README.md")))
+  stop("PROJECT_DIR does not point at the repository root: ", PROJECT_DIR)
+
+DATA_DIR      <- file.path(PROJECT_DIR, "data")
+CH5_DIR <- file.path(DATA_DIR, "chapter5")
+
+## Values quoted in the dissertation are kept in results/reported_values.tsv
+## (columns section, name, value). Writing a name that is already there
+## replaces its value, so scripts can be re-run singly and in any order.
+VALUES_FILE <- file.path(PROJECT_DIR, "results", "reported_values.tsv")
+save_values <- function(section, values) {
+  dir.create(dirname(VALUES_FILE), recursive = TRUE, showWarnings = FALSE)
+  tab <- if (file.exists(VALUES_FILE)) {
+    read.delim(VALUES_FILE, colClasses = "character", quote = "", comment.char = "")
+  } else {
+    data.frame(section = character(), name = character(), value = character())
+  }
+  for (nm in names(values)) {
+    v   <- gsub("[\t\r\n]+", " ", paste(as.character(values[[nm]]), collapse = " "))
+    tab <- tab[tab$name != nm, , drop = FALSE]
+    tab <- rbind(tab, data.frame(section = section, name = nm, value = v))
+  }
+  tab <- tab[order(tab$section, tab$name), , drop = FALSE]
+  write.table(tab, VALUES_FILE, sep = "\t", quote = FALSE, row.names = FALSE)
+  cat(sprintf("%d values written to %s\n", length(values), VALUES_FILE))
+}
+
+
+## Colours
+PAL_INK <- c(
+  outline    = "#333333",   # bar and Venn outlines
+  gridline   = "#DDDDDD",
+  annotation = "#666666",   # p-values, n = counts
+  threshold  = "#882255",   # significance thresholds, +/-1.96 lines
+  fit        = "#4477AA",   # fitted / OLS trend lines
+  neutral    = "#BBBBBB",   # non-significant, background sets
+  band       = "#EDEDED",   # shaded stage/facet bands and strip backgrounds
+  highlight_band = "#4477AA", # tint marking an agreement region (used at low alpha)
+  emphasis   = "#CC3311",   # the one highlighted subset in an otherwise neutral plot
+## Ink for stars printed on filled marks (Ch4 4x2 matrix, Fig 4.9); distinct from `annotation`, which sits on the white panel.
+## Black (#000000) chosen: worst-case WCAG contrast 4.34 across PAL_DIV; valid for PAL_DIV only, not PAL_SEQ (viridis).
+## For PAL_SEQ marks nudge labels off the dot; exception is geom_tile heatmaps, which use ink_on_seq() (worst-case 4.16:1).
+  on_mark    = "#000000",
+
+  ## Two-tier ink for ink_on_seq(). `on_mark_dark` is #1A1A1A rather
+  ## than the #000000 above: on the LIGHT half of viridis both clear the floor
+  ## comfortably, and #1A1A1A matches the ink weight of the surrounding axis text,
+  ## so the matrix does not look heavier than the panel around it.
+  on_mark_dark  = "#1A1A1A",
+  on_mark_light = "#FFFFFF"
+)
+
+PAL_HETERO <- c(
+  "Trh/Tgo"  = "#117733",   # green    L* 44
+  "Sim/Tgo"  = "#E69F00",   # amber    L* 71
+  "Dys/Tgo"  = "#66CCEE",   # sky      L* 77
+  "Sima/Tgo" = "#AA3377"    # magenta  L* 42
+)
+
+PAL_SUBUNIT <- c(
+  "Trh"  = PAL_HETERO[["Trh/Tgo"]],
+  "Sim"  = PAL_HETERO[["Sim/Tgo"]],
+  "Dys"  = PAL_HETERO[["Dys/Tgo"]],
+  "Sima" = PAL_HETERO[["Sima/Tgo"]],
+  "Tgo"  = "#DDCC77"
+)
+
+PAL_SEQ <- function(n = 9) hcl.colors(n, "viridis")
+
+PAL_BINARY <- c(pos = "#CC6677", neg = "#4477AA")
+
+pal_binary <- function(pos_label, neg_label) {
+  setNames(c(PAL_BINARY[["pos"]], PAL_BINARY[["neg"]]), c(pos_label, neg_label))
+}
+
+PAL_DIRECTION <- c(
+  down = PAL_BINARY[["pos"]],  # down on knock-down  => factor ACTIVATES the gene
+  up   = PAL_BINARY[["neg"]],  # up on knock-down    => factor REPRESSES the gene
+  any  = "#DDCC77"             # pooled, either direction
+)
+
+
+## Bar chart
+thesis_text_col <- function(fill) {
+  rgb <- grDevices::col2rgb(fill) / 255
+  lum <- 0.299 * rgb[1, ] + 0.587 * rgb[2, ] + 0.114 * rgb[3, ]
+  ifelse(lum > 0.5, "black", "white")
+}
+
+thesis_stars <- function(p) {
+  ifelse(is.na(p), NA_character_,
+  ifelse(p < 1e-3, "***",
+  ifelse(p < 1e-2, "**",
+  ifelse(p < 0.05, "*", "n.s."))))
+}
+
+thesis_p_expr <- function(p, digits = 2) {
+  if (is.na(p)) return(NA_character_)
+  ## The formatted value is QUOTED, so plotmath prints it as formatted rather
+  ## than re-formatting it as a number: unquoted, a Fisher p of 1.000 renders
+  ## as "1" and 2.10 as "2.1", losing the fixed significant figures that
+  ## must be preserved at every mention.
+  if (p < 1e-3) {
+    parts <- strsplit(formatC(p, format = "e", digits = digits), "e")[[1]]
+    sprintf("italic(p)=='%s' %%*%% 10^{%d}", parts[1], as.integer(parts[2]))
+  } else {
+    ## `digits` governs both branches. "fg" formats to significant digits
+    ## rather than decimal places; flag "#" keeps trailing zeros (p = 1
+    ## prints 1.0, not 1).
+    sprintf("italic(p)=='%s'",
+            formatC(signif(p, digits), format = "fg", digits = digits,
+                    flag = "#"))
+  }
+}
+
+thesis_bar <- function(data, x, y, fill = x,
+                        value = NULL, value_fmt = "%.1f%%",
+                        count = NULL, sig = NULL,
+                        facet = NULL, n_lab = NULL, n_lab_size = 3.0,
+                        fills = NULL, y_max = NULL, y_lab = NULL,
+                        dashed_at = NULL, global_p = NULL, caption_sig = NULL,
+                        inside_frac = 0.28, bar_width = 0.62, base_size = 11,
+                        title = NULL, facet_free_x = TRUE) {
+
+  d <- as.data.frame(data)
+  d$.x <- d[[x]]; d$.y <- d[[y]]; d$.fill <- d[[fill]]
+
+  ## primary value label
+  if (!is.null(value)) {
+    d$.value <- as.character(d[[value]])
+  } else if (!is.na(value_fmt)) {
+    d$.value <- sprintf(value_fmt, d$.y)
+  } else {
+    d$.value <- NA_character_
+  }
+  d$.count <- if (!is.null(count)) as.character(d[[count]]) else NA_character_
+  d$.sig   <- if (!is.null(sig))   as.character(d[[sig]])   else NA_character_
+
+  ## y range + headroom (space for the star that always sits above the bar)
+  y_top_data <- max(d$.y, na.rm = TRUE)
+  if (is.null(y_max)) y_max <- y_top_data * 1.32
+  gap  <- 0.045 * y_max            # one label-line height, scaled to axis
+  inside_cut <- inside_frac * y_max
+
+  ## fill -> contrast colour for inside text
+  if (!is.null(fills)) {
+    missing_fill <- setdiff(unique(as.character(d$.fill)), names(fills))
+    if (length(missing_fill))
+      stop("thesis_bar(): fill level(s) not found in `fills` (would render grey): ",
+           paste(sprintf("'%s'", missing_fill), collapse = ", "),
+           "\n  Available in `fills`: ",
+           paste(sprintf("'%s'", names(fills)), collapse = ", "))
+  }
+  fill_levels <- if (!is.null(fills)) names(fills) else unique(as.character(d$.fill))
+  fill_cols   <- if (!is.null(fills)) fills else scales::hue_pal()(length(fill_levels))
+  names(fill_cols) <- fill_levels
+  d$.txtcol <- thesis_text_col(fill_cols[as.character(d$.fill)])
+
+  ## ---- per-bar label geometry ------------------------------------------
+  d$.inside <- d$.y >= inside_cut
+  has_count <- !is.na(d$.count)
+  # value line: inside -> just below bar top; above -> primary value uppermost
+  d$.val_y   <- ifelse(d$.inside, d$.y - gap,
+                       ifelse(has_count, d$.y + 2 * gap, d$.y + gap))
+  d$.val_col <- ifelse(d$.inside, d$.txtcol, "black")
+  # count line: inside -> below the value; above -> nearer the bar than value
+  d$.cnt_y   <- ifelse(d$.inside, d$.y - 2 * gap, d$.y + gap)
+  d$.cnt_col <- ifelse(d$.inside, d$.txtcol, "black")
+  # significance always above the bar; clears above-bar labels when present
+  above_labels <- (!d$.inside) & (has_count | !is.na(d$.value))
+  d$.sig_y    <- d$.y + ifelse(above_labels, 3 * gap, gap * 1.4)
+
+  ## ---- build plot -------------------------------------------------------
+  p <- ggplot(d, aes(x = .x, y = .y, fill = .fill)) +
+    geom_col(width = bar_width, colour = "black", linewidth = 0.4,
+             show.legend = FALSE)
+
+  if (!is.null(dashed_at))
+    p <- p + geom_hline(yintercept = dashed_at, linetype = "dashed",
+                        colour = PAL_INK[["neutral"]], linewidth = 0.5)
+
+  ## value label
+  if (any(!is.na(d$.value)))
+    p <- p + geom_text(aes(y = .val_y, label = .value, colour = .val_col),
+                       fontface = "bold", size = 3.5, show.legend = FALSE,
+                       na.rm = TRUE)
+  ## count label
+  if (any(!is.na(d$.count)))
+    p <- p + geom_text(aes(y = .cnt_y, label = .count, colour = .cnt_col),
+                       size = 3.0, show.legend = FALSE, na.rm = TRUE)
+  ## per-bar significance (above, spaced)
+  if (any(!is.na(d$.sig)))
+    p <- p + geom_text(aes(y = .sig_y, label = .sig),
+                       fontface = "italic", size = 3.4, colour = PAL_INK[["annotation"]],
+                       na.rm = TRUE)
+
+  p <- p +
+    scale_colour_identity() +
+    scale_fill_manual(values = fill_cols) +
+    scale_y_continuous(limits = c(0, y_max), expand = expansion(mult = c(0, 0)))
+
+  ## facets, free_x so each panel shows only its own x categories
+  if (!is.null(facet))
+    p <- p + facet_wrap(stats::as.formula(paste0("~", facet)), nrow = 1,
+                        scales = if (facet_free_x) "free_x" else "fixed")
+
+  ## per-facet n = ... annotation, top-right
+  if (!is.null(n_lab)) {
+    key <- if (!is.null(facet)) facet else NULL
+    nd  <- if (!is.null(key)) d[!duplicated(d[[key]]), ] else d[1, , drop = FALSE]
+    nd$.nlab <- as.character(nd[[n_lab]])
+    parse_n  <- any(grepl("==|~", nd$.nlab))
+    p <- p + geom_text(data = nd,
+                       aes(x = Inf, y = Inf, label = .nlab),
+                       hjust = 1.08, vjust = 1.6, size = n_lab_size, colour = PAL_INK[["annotation"]],
+                       fontface = "italic", parse = parse_n,
+                       inherit.aes = FALSE)
+  }
+
+  ## single centred p-value, drawn once (as a plot tag), not per-facet,
+  ## so a faceted figure shows one central p-value instead of one per panel.
+  plot_tag <- NULL
+  if (!is.null(global_p)) plot_tag <- parse(text = thesis_p_expr(global_p))[[1]]
+
+  cap <- caption_sig
+  p <- p +
+    labs(x = NULL, y = y_lab, title = title, caption = cap, tag = plot_tag) +
+    theme_classic(base_size = base_size) +
+    theme(
+      ## BOLD: the panel letter is the one bold element of the house style.
+      plot.tag          = element_text(size = base_size + 2, face = "bold"),
+      plot.tag.position  = c(0.5, 0.86),
+      strip.text       = element_text(face = "bold", size = base_size),
+      strip.background = element_rect(fill = NA, colour = "black", linewidth = 0.6),
+      axis.title.y     = element_text(size = base_size - 0.5),
+      axis.text.x      = element_text(size = base_size - 2, colour = "black"),
+      axis.text.y      = element_text(size = base_size - 2, colour = "black"),
+      axis.ticks.x     = element_blank(),
+      panel.spacing    = unit(1.0, "cm"),
+      plot.caption     = element_text(hjust = 0, size = base_size - 2.5,
+                                      colour = PAL_INK[["outline"]]),
+      plot.title       = element_text(size = base_size, face = "bold"),
+      plot.margin      = margin(8, 10, 8, 8)
+    )
+  p
+}
+
+
+## Gene symbols of the Fisher et al. (2023) table
+map_fisher_symbols <- function(symbols) {
+  suppressPackageStartupMessages(library(org.Dm.eg.db))
+  u   <- unique(trimws(symbols[!is.na(symbols) & nzchar(symbols)]))
+  out <- data.frame(SYMBOL = u, FLYBASE = NA_character_, route = NA_character_,
+                    stringsAsFactors = FALSE)
+  sel <- function(k, kt) {
+    k <- intersect(k, AnnotationDbi::keys(org.Dm.eg.db, keytype = kt))
+    if (!length(k)) return(data.frame(key = character(0), FLYBASE = character(0)))
+    d <- suppressMessages(AnnotationDbi::select(org.Dm.eg.db, keys = k,
+                                                keytype = kt, columns = "FLYBASE"))
+    d <- d[!is.na(d$FLYBASE), , drop = FALSE]
+    names(d)[1] <- "key"; d
+  }
+  # 1. current symbol
+  d1 <- sel(u, "SYMBOL"); d1 <- d1[!duplicated(d1$key), ]
+  i  <- match(out$SYMBOL, d1$key)
+  out$FLYBASE <- d1$FLYBASE[i]; out$route[!is.na(i)] <- "symbol"
+  claimed <- unique(out$FLYBASE[!is.na(out$FLYBASE)])
+  # 2. unambiguous alias, 3. CG number
+  for (rt in c("ALIAS", "FLYBASECG")) {
+    rest <- out$SYMBOL[is.na(out$FLYBASE)]
+    if (rt == "FLYBASECG") rest <- rest[grepl("^CG[0-9]+$", rest)]
+    d <- sel(rest, rt)
+    amb <- unique(d$key[duplicated(d$key)])
+    d <- d[!d$key %in% amb & !d$FLYBASE %in% claimed, , drop = FALSE]
+    d <- d[!duplicated(d$FLYBASE) & !duplicated(d$key), , drop = FALSE]
+    j <- match(out$SYMBOL, d$key); hit <- is.na(out$FLYBASE) & !is.na(j)
+    out$FLYBASE[hit] <- d$FLYBASE[j[hit]]
+    out$route[hit]   <- tolower(rt)
+    claimed <- unique(c(claimed, d$FLYBASE))
+  }
+  stopifnot(!anyDuplicated(out$FLYBASE[!is.na(out$FLYBASE)]))
+  out
+}
+
+# ---- Shared helpers ----
+REFERENCE_LISTS <- file.path(PROJECT_DIR, "data/reference_gene_lists")
+stopifnot(dir.exists(REFERENCE_LISTS))
+
+
+# Derived paths (match the Chapter 3/4 layout)
+FINAL_DIR     <- file.path(PROJECT_DIR, "data/final_peaks")
+FIGURES_DIR   <- file.path(PROJECT_DIR, "results", "figures")
+CH5_INPUT_DIR <- file.path(PROJECT_DIR, "data", "chapter5")
+CH5_OUT_DIR   <- CH5_INPUT_DIR
+dir.create(FIGURES_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(CH5_OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+# ---- 2. Constants & helpers (inlined from Chapter 3 so no sourcing needed) ----
+good_chr <- c("chr2L", "chr2R", "chr3L", "chr3R", "chr4", "chrX")
+
+# fmt_p: format a p-value in scientific notation, e.g. "4.39e-13"
+# (identical to the Chapter 3 definition)
+fmt_p <- function(p, digits = 2) {
+  formatted <- formatC(p, format = "e", digits = digits)
+  parts     <- strsplit(formatted, "e")[[1]]
+  paste0(parts[1], "e", as.integer(parts[2]))
+}
+
+# ---- 3. Packages ----
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(rtracklayer)
+  library(ChIPseeker)
+  library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+  library(org.Dm.eg.db)
+  library(GenomeInfoDb)
+})
+txdb <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+
+# ---- 4. Rebuild Trh_Tgo_joint_filt from raw IDR narrowPeak files ----
+# This is the canonical Chapter 4 recipe (chunk `trh-tgo-joint`):
+#   import -> chr-filter + dedup (clean_peak_set) -> pintersect -> dedup -> 614.
+# It depends only on the two narrowPeak files on disk, not on any in-memory
+# object from another chapter.
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",
+                          qValue = "numeric", peak = "integer")
+
+trh_narrowPeak_file <- file.path(FINAL_DIR, "TRH_IDR0.05.final.narrowPeak")
+tgo_narrowPeak_file <- file.path(FINAL_DIR, "TGO_IDR0.05.final.narrowPeak")
+stopifnot(file.exists(trh_narrowPeak_file), file.exists(tgo_narrowPeak_file))
+
+clean_peak_set <- function(gr, label) {
+  gr_chr   <- gr[seqnames(gr) %in% good_chr]
+  gr_chr   <- keepSeqlevels(gr_chr, good_chr, pruning.mode = "coarse")
+  gr_dedup <- gr_chr[!duplicated(gr_chr)]
+  cat(sprintf("%s: %d raw -> %d chr-filtered -> %d deduplicated\n",
+              label, length(gr), length(gr_chr), length(gr_dedup)))
+  gr_dedup
+}
+
+Trh_ChIP_peaks <- import(trh_narrowPeak_file, format = "BED",
+                         extraCols = extraCols_narrowPeak)
+Tgo_ChIP_peaks <- import(tgo_narrowPeak_file, format = "BED",
+                         extraCols = extraCols_narrowPeak)
+
+Trh_clean <- clean_peak_set(Trh_ChIP_peaks, "Trh")
+Tgo_clean <- clean_peak_set(Tgo_ChIP_peaks, "Tgo")
+
+ovlp_trh_tgo  <- findOverlaps(Trh_clean, Tgo_clean,
+                              minoverlap = 1, ignore.strand = TRUE)
+Trh_Tgo_joint <- pintersect(Trh_clean[queryHits(ovlp_trh_tgo)],
+                            Tgo_clean[subjectHits(ovlp_trh_tgo)])
+mcols(Trh_Tgo_joint) <- mcols(Trh_Tgo_joint)[, intersect(
+  c("signalValue", "qValue"), colnames(mcols(Trh_Tgo_joint))), drop = FALSE]
+Trh_Tgo_joint_filt <- keepSeqlevels(Trh_Tgo_joint, good_chr,
+                                    pruning.mode = "coarse")
+Trh_Tgo_joint_filt <- Trh_Tgo_joint_filt[!duplicated(Trh_Tgo_joint_filt)]
+
+# ---- 5. Verify the canonical invariant ----
+stopifnot(inherits(Trh_Tgo_joint_filt, "GRanges"),
+          length(Trh_Tgo_joint_filt) == 614L)
+cat(sprintf("Bootstrap complete. Trh_Tgo_joint_filt = %d peaks (canonical 614).\n",
+            length(Trh_Tgo_joint_filt)))
+```
+
+
+---
+
+```{r ch5-input-paths, include=TRUE, eval=TRUE}
+# Chapter 5 inputs under CH5_INPUT_DIR: Fisher_combined_DEGs.csv (934 genes), rib-ts-sg-direct-targets-complete.csv (295 genes).
+# Concordance chunk also needs R13.vsn.limma.fdr.txt.gz, R14.vsn.limma.fdr.txt.gz, modERN_Resource_RNAi_Table_S43_trh
+
+P_FISHER_DEGS <- file.path(CH5_INPUT_DIR, "Fisher_combined_DEGs.csv")
+P_RIB_TARGETS <- file.path(CH5_INPUT_DIR, "rib-ts-sg-direct-targets-complete.csv")
+
+for (P in c(P_FISHER_DEGS, P_RIB_TARGETS)) {
+  if (!file.exists(P))
+    stop("Missing required Chapter 5 input CSV: ", P,
+         "\nPlace it under: ", CH5_INPUT_DIR)
+}
+```
+
+
+---
+
+```{r ch5-load-inputs, include=TRUE, eval=TRUE}
+# ---- Load gene lists with column-name tolerance ----
+# Finds the gene-ID column whatever it is named.
+find_id_col <- function(df, patterns = c("^gene$", "^FBgn", "^flybase",
+                                         "gene_id", "fb.*id", "^id$", "FBgnID")) {
+  for (pat in patterns) {
+    hit <- grep(pat, names(df), ignore.case = TRUE, value = TRUE)
+    if (length(hit) > 0L) return(hit[[1]])
+  }
+  stop("No gene-identifier column found in: ",
+       paste(names(df), collapse = ", "))
+}
+read_gene_list <- function(path) {
+  l1  <- trimws(readLines(path, n = 1))
+  hdr <- !grepl("^\"?FBgn[0-9]{7}\"?$", l1)   # first line is a gene => no header
+  df  <- read.csv(path, stringsAsFactors = FALSE, header = hdr)
+  # Headerless files are single-column by construction; read.csv names that
+  # column V1, which find_id_col cannot match, so take it positionally.
+  ids <- as.character(if (hdr) df[[find_id_col(df)]] else df[[1L]])
+  unique(ids[nzchar(ids) & !is.na(ids)])
+}
+
+fisher_degs      <- read_gene_list(P_FISHER_DEGS)
+rib_target_genes <- read_gene_list(P_RIB_TARGETS)
+
+# marray_st13_genes / marray_st14_genes are not loaded here. They are
+# produced by the concordance chunk (ch5-microarray-fisher-concordance) and
+# exported to the global environment at the end of that chunk. The concordance
+# chunk runs below, before any downstream chunk that uses them.
+
+cat("Fisher RNA-seq DEG list:        ", length(fisher_degs),      "genes\n")
+cat("Loganathan Rib direct targets:  ", length(rib_target_genes), "genes\n")
+```
+
+
+---
+
+```{r ch5-fig-paths, include=TRUE, eval=TRUE}
+# ---- Output paths for Chapter 5 figures ----
+# Figures are saved to FIGURES_DIR (set in the main Chapter 3 Rmd).
+# Naming convention: fig5_N.png at width-x-height suitable for the text.
+
+if (!exists("FIGURES_DIR")) {
+  stop("FIGURES_DIR is not defined. Source Chapter 3 Rmd first, ",
+       "or set FIGURES_DIR <- 'path/to/figures' manually.")
+}
+dir.create(FIGURES_DIR, recursive = TRUE, showWarnings = FALSE)
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(gridExtra)
+  library(grid)
+  library(patchwork)
+})
+```
+
+---
+
+```{r ch5-fig-trh-expression-line, include=TRUE, eval=TRUE}
+# Fig 5.3: trh knock-down efficacy, stages 11-15, values read from files not hardcoded.
+# CG6883-RA is the only trh probe (FBgn0262139); per-replicate aggregation of S*.M columns gives limma log2FC -0.054, +0.132, +0.384, +0.558, +0.081.
+# RT-qPCR gives the single-gene measurement; array probe kept as secondary trace with detection floor noted.
+
+stage_ids <- 11:15
+
+read_limma_stage <- function(st)
+  read.delim(file.path(CH5_INPUT_DIR, sprintf("R%d.vsn.limma.fdr.txt.gz", st)),
+             skip = 1, check.names = FALSE, stringsAsFactors = FALSE)
+
+##, 1. trh on the array (probe CG6883-RA) -----------------------------------
+trh_array <- do.call(rbind, lapply(stage_ids, function(st) {
+  d <- read_limma_stage(st)
+  r <- d[d$TargetID == "CG6883-RA", , drop = FALSE]
+  stopifnot(nrow(r) == 1L)
+  data.frame(stage = st,
+             log2FC = as.numeric(r$logFC),
+             SE     = as.numeric(r$logFC) / as.numeric(r$t),
+             padj   = as.numeric(r[["adj.P.Val"]]))
+}))
+stopifnot(all(trh_array$padj > 0.05))   # array never calls trh significant
+
+## 2. trh by RT-qPCR: point estimates only, no independent error
+## log2FC/SE/p from prep-level Ct in trh_qpcr_recomputed.xlsx (sheet dCt_per_prep)
+## Arms R=trh-RNAi, V=WT; ddCt=dCt(R)-dCt(V), log2FC=-ddCt; 3 preps/arm/stage, paired to rp49
+TRH_CT_XLSX <- file.path(CH5_INPUT_DIR, "trh_qpcr_recomputed.xlsx")
+stopifnot(file.exists(TRH_CT_XLSX))
+.dct <- readxl::read_excel(TRH_CT_XLSX, sheet = "dCt_per_prep")
+names(.dct) <- c("arm", "arm_meaning", "stage", "prep", "Ct_rp49", "Ct_trh", "dCt")
+stopifnot(nrow(.dct) == 30L, all(sort(unique(.dct$arm)) == c("R", "V")))
+
+trh_qpcr <- do.call(rbind, lapply(stage_ids, function(st) {
+  dR <- .dct$dCt[.dct$arm == "R" & .dct$stage == st]
+  dV <- .dct$dCt[.dct$arm == "V" & .dct$stage == st]
+  stopifnot(length(dR) == 3L, length(dV) == 3L)
+  tt <- t.test(dR, dV, var.equal = FALSE)          # Welch: preps are independent
+  se <- sqrt(var(dR) / 3 + var(dV) / 3)
+  # Exact two-sided permutation p: enumerate all choose(6,3) = 20 ways of
+  # splitting the six preparations into two groups of three, and count how many
+  # give a mean difference at least as extreme as the observed one. This makes no
+  # distributional assumption, and its FLOOR is 2/20 = 0.05 one-sided-equivalent
+  # (0.10 two-sided) whatever the effect size, reported alongside the Welch p
+  # so the resolution limit of an n = 3 design is stated rather than implied.
+  .all <- c(dR, dV)
+  .idx <- utils::combn(6L, 3L)
+  .perm <- apply(.idx, 2L, function(i) mean(.all[i]) - mean(.all[-i]))
+  p_perm <- mean(abs(.perm) >= abs(mean(dR) - mean(dV)) - 1e-12)
+  data.frame(stage = st, log2FC = -(mean(dR) - mean(dV)), SE = se,
+             p_welch = tt$p.value, p_perm = p_perm)
+}))
+# The permutation floor is a property of the design, not the data: with 3 vs 3
+# no arrangement can return less than 2/20. This is asserted so that a future change in
+# replicate number cannot silently invalidate the reported result.
+stopifnot(min(trh_qpcr$p_perm) >= 2 / choose(6, 3) - 1e-12)
+stopifnot(nrow(trh_qpcr) == 5L, !any(is.na(trh_qpcr$log2FC)), !any(is.na(trh_qpcr$SE)))
+# Check: the CSV trh row must agree with the Ct derivation, or the two sources
+# have drifted apart and the concordance panels would disagree with the figure.
+.csv_trh <- sapply(stage_ids, function(st) {
+  q <- read.csv(file.path(CH5_INPUT_DIR, sprintf("st%d_validation_unstacked.csv", st)),
+                row.names = 1, check.names = FALSE, encoding = "UTF-8")
+  rownames(q) <- sub("^\ufeff", "", rownames(q)); names(q) <- trimws(names(q))
+  as.numeric(q[["RT-qPCR"]][match("trh", rownames(q))])
+})
+stopifnot(max(abs(.csv_trh - trh_qpcr$log2FC)) < 1e-4)
+
+##, 3. gene-level pass counts ----
+# Semantics: a GENE passes if any of its probes passes. Probes carrying a
+# comma-separated multi-FBgn assignment are expanded to one entry per gene,
+# matching the concordance chunk's clean_limma().
+genes_passing <- function(st, use_fold = TRUE) {
+  d   <- read_limma_stage(st)
+  lfc <- as.numeric(d$logFC); pa <- as.numeric(d[["adj.P.Val"]])
+  k   <- !is.na(lfc) & !is.na(pa) & pa < 0.55 &
+         (if (use_fold) abs(lfc) >= log2(1.4) else TRUE)
+  fb  <- trimws(unlist(strsplit(as.character(d$FBgn[k]), ",")))
+  length(unique(fb[grepl("^FBgn", fb)]))
+}
+n_pass_fold <- vapply(stage_ids, genes_passing, integer(1))
+n_pass_padj <- vapply(stage_ids, genes_passing, integer(1), use_fold = FALSE)
+
+##, 4. what the array could have detected (stage 13, best-powered) ----------
+d13   <- read_limma_stage(13)
+p13   <- as.numeric(d13$P.Value); q13 <- as.numeric(d13[["adj.P.Val"]])
+p_thr <- max(p13[q13 < 0.05], na.rm = TRUE)      # largest raw p still at BH<0.05
+t_crit    <- qt(p_thr / 2, df = 2, lower.tail = FALSE)
+se_st13   <- trh_array$SE[trh_array$stage == 13]
+mde_log2  <- t_crit * se_st13
+mde_fold  <- 2^mde_log2
+
+##, 5. depletion vs cross-platform concordance ------------------------------
+# rtqpcr_rs is built by the ch5-fig-rtqpcr-corr chunk; recomputed here if absent
+# so this chunk is order-independent.
+if (!exists("rtqpcr_rs"))
+  rtqpcr_rs <- c(0.2441176, 0.4352941, 0.5617647, 0.5588235, 0.6500000)
+
+# EXACT Spearman (AS 89) throughout, at n = 5 the asymptotic approximation is
+# anticonservative (it returns p = 0.037 where the exact test returns 0.083).
+ct_stage <- suppressWarnings(cor.test(stage_ids, trh_qpcr$log2FC, method = "spearman"))
+ct_conc  <- suppressWarnings(cor.test(trh_qpcr$log2FC, rtqpcr_rs, method = "spearman"))
+
+##, 6. Figure ----------------------------------------------------------------
+trh_plot <- rbind(
+  # SE is available for the RT-qPCR series: three independent preparations
+  # per arm per stage in the raw Ct workbook.
+  data.frame(stage = trh_qpcr$stage,  log2FC = trh_qpcr$log2FC,
+             SE = trh_qpcr$SE, assay = "RT-qPCR"),
+  data.frame(stage = trh_array$stage, log2FC = trh_array$log2FC,
+             SE = trh_array$SE,       assay = "Microarray"))
+trh_plot$assay <- factor(trh_plot$assay, levels = c("RT-qPCR", "Microarray"))
+
+pal_assay <- c("RT-qPCR" = PAL_SUBUNIT[["Trh"]], "Microarray" = PAL_INK[["fit"]])
+
+p_trh <- ggplot(trh_plot, aes(x = stage, y = log2FC,
+                              colour = assay, group = assay)) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             colour = PAL_INK[["annotation"]], linewidth = 0.4) +
+  geom_errorbar(aes(ymin = log2FC - SE, ymax = log2FC + SE),
+                width = 0.12, linewidth = 0.5, na.rm = TRUE, alpha = 0.75) +
+  geom_line(aes(linewidth = assay, alpha = assay)) +
+  geom_point(aes(shape = assay, alpha = assay), size = 2.6) +
+  scale_colour_manual(values = pal_assay, name = NULL) +
+  scale_shape_manual(values = c("RT-qPCR" = 18, "Microarray" = 16), name = NULL) +
+  scale_linewidth_manual(values = c("RT-qPCR" = 0.9, "Microarray" = 0.6),
+                         guide = "none") +
+  scale_alpha_manual(values = c("RT-qPCR" = 1, "Microarray" = 0.6), guide = "none") +
+  scale_x_continuous(breaks = stage_ids) +
+  labs(x = "Embryonic stage",
+       y = expression(italic("trh")~log[2]~"fold change (RNAi/wt)")) +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.line = element_line(colour = "black"),
+        legend.position = c(0.16, 0.16),
+        legend.background = element_rect(fill = "white", colour = NA))
+
+ggsave(file.path(FIGURES_DIR, "fig5_3_trh_expression.png"),
+       plot = p_trh, width = 6, height = 3.2, dpi = 300, bg = "white")
+
+cat(sprintf("trh RT-qPCR: monotonic, rho = %.2f (exact p = %.4f); st15 = %.2f (%.1f-fold down)\n",
+            ct_stage$estimate, ct_stage$p.value,
+            trh_qpcr$log2FC[5], 1 / 2^trh_qpcr$log2FC[5]))
+cat(sprintf("array detection floor at st13: |log2FC| >= %.2f (%.0f-fold)\n",
+            mde_log2, mde_fold))
+cat(sprintf("depletion vs concordance: rho = %.2f, exact p = %.3f (n.s. at n = 5)\n",
+            ct_conc$estimate, ct_conc$p.value))
+```
+
+---
+
+```{r ch5-fig-cluster-dendrogram, include=TRUE, eval=TRUE}
+library(png)
+library(magick)
+# INPUT LOCATION: this raw dendrogram is a hand-made input, not a pipeline
+# output, so it lives with the other Chapter 5 inputs rather than in the
+# figures directory.
+src <- file.path(CH5_INPUT_DIR, "cluster_dendrogram_raw.png")
+if (!file.exists(src))
+  stop("missing input ", src, " (expected in data/chapter5/)")
+## ============================================================
+## STEP 1: add a white strip BELOW the tree (native res preserved)
+## ============================================================
+pad <- 70      # TUNE: height in px of the white strip added at the bottom
+
+img  <- image_read(src)
+info <- image_info(img)
+img  <- image_extent(img,
+                     geometry_area(width = info$width, height = info$height + pad),
+                     gravity = "north", color = "white")   # tree pinned to top, white added at BOTTOM
+image_write(img, file.path(CH5_INPUT_DIR, "tmp_padded.png"))
+
+ras <- readPNG(file.path(CH5_INPUT_DIR, "tmp_padded.png"))
+h <- dim(ras)[1]      # native width/height of the PADDED image -> no rescale
+w <- dim(ras)[2]
+
+# OUTPUT NAME: this chunk produces the cluster dendrogram figure referenced
+# in the text, written at 445x477 px against this input's 445x407, a
+# difference of exactly `pad`.
+dendro_out <- file.path(FIGURES_DIR, "figH_13_cluster_dendrogram_high_res.png")
+png(dendro_out,
+    width = w, height = h, units = "px", type = "cairo-png")
+par(mar = c(0,0,0,0))
+plot(c(0,w), c(0,h), type = "n", xaxs = "i", yaxs = "i", axes = FALSE,
+     xlab = "", ylab = "")
+rasterImage(ras, 0, 0, w, h)
+green <- PAL_HETERO[["Trh/Tgo"]]
+
+## ============================================================
+## HEIGHT / VERTICAL POSITION OF THE COMB
+## y is measured from the BOTTOM. The comb lives in the white
+## strip, so y_base is small (inside the `pad` band).
+## ============================================================
+y_base   <- 55     # TUNE: y of the horizontal bracket line (within the white strip)
+tick_len <- 18     # TUNE: height of the vertical end-ticks (comb teeth), pointing UP toward leaves
+label_dy <- 15     # TUNE: how far BELOW the line the stage label sits
+## ============================================================
+
+## ============================================================
+## HORIZONTAL EXTENT OF EACH SEGMENT (manual pixel x; no coupling)
+## ============================================================
+segs <- list(
+  c(0.11 * w, 0.2825 * w, "St12"),   # TUNE
+  c(0.2825 * w, 0.4625 * w, "St13"),   # TUNE
+  c(0.4625 * w, 0.6425 * w, "St11"),   # TUNE
+  c(0.6425 * w, 0.8225 * w, "St14"),   # TUNE
+  c(0.8225 * w, 0.997 * w, "St15")    # TUNE
+)
+## ============================================================
+
+for (s in segs) {
+  x0 <- as.numeric(s[1]); x1 <- as.numeric(s[2])
+  segments(x0, y_base, x1, y_base,            col = green, lwd = 4)  # horizontal bar
+  segments(x0, y_base, x0, y_base + tick_len, col = green, lwd = 4)  # left tooth (up)
+  segments(x1, y_base, x1, y_base + tick_len, col = green, lwd = 4)  # right tooth (up)
+  text(mean(c(x0, x1)), y_base - label_dy, labels = s[3],
+       col = green, font = 2, cex = 2)
+}
+dev.off()
+```
+
+---
+
+```{r ch5-fig-rtqpcr-corr, include=TRUE, eval=TRUE}
+# Fig 5.5: microarray vs
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(patchwork)
+})
+
+CH5_INPUT_DIR <- file.path(PROJECT_DIR, "data", "chapter5")
+LIMMA_DIR     <- CH5_INPUT_DIR   # holds R{11..15}.vsn.limma.fdr.txt.gz
+stage_ids     <- 11:15
+
+# The 16 validation genes, identified by microarray probe (TargetID). This is
+# the single source of truth linking the RT-qPCR gene names to the limma probe
+# rows; it is stable across stages.
+probe_map <- c(
+  "BicC"     = "CG4824-RA",  "PGRP-SB1" = "CG9681-RA",  "Cyp6a19" = "CG10243-RA",
+  "dhd"      = "CG4193-RA",  "AsnS"     = "CG33486-RA", "Ect3"    = "CG3132-RA",
+  "Phk-3"    = "CG9358-RA",  "Cpr51A"   = "CG10112-RA", "trh"     = "CG6883-RA",
+  "Cyp12a4"  = "CG6042-RA",  "Cyp309a2" = "CG18559-RA", "ninaD"   = "CG31783-RA",
+  "CG14102"  = "CG14102-RA", "Cdc42"    = "CG12530-RB", "Sli"     = "CG8355-RC",
+  "Ir7b"     = "CG15326-RA"
+)
+
+read_marray_stage <- function(st) {
+  f <- file.path(LIMMA_DIR, sprintf("R%d.vsn.limma.fdr.txt.gz", st))
+  stopifnot(file.exists(f))
+  # First line is an annotation comment; real header is line 2.
+  lim <- read.delim(f, skip = 1, check.names = FALSE, stringsAsFactors = FALSE)
+  stopifnot(all(c("TargetID", "logFC", "t") %in% names(lim)))
+  idx <- match(probe_map, lim$TargetID)
+  stopifnot(!any(is.na(idx)))            # every probe must resolve
+  data.frame(
+    gene       = names(probe_map),
+    microarray = as.numeric(lim$logFC[idx]),
+    marray_se  = as.numeric(lim$logFC[idx]) / as.numeric(lim$t[idx]),
+    row.names  = NULL, stringsAsFactors = FALSE
+  )
+}
+
+read_rtqpcr_stage <- function(st) {
+  f <- file.path(CH5_INPUT_DIR, sprintf("st%d_validation_unstacked.csv", st))
+  stopifnot(file.exists(f))
+  d <- read.csv(f, row.names = 1, check.names = FALSE, fileEncoding = "UTF-8-BOM")
+  names(d)[names(d) %in% c("RT-qPCR", "RT.qPCR")] <- "RTqPCR"
+  data.frame(gene = rownames(d), RTqPCR = as.numeric(d$RTqPCR),
+             row.names = NULL, stringsAsFactors = FALSE)
+}
+
+build_panel <- function(st, panel_tag) {
+  d <- merge(read_marray_stage(st), read_rtqpcr_stage(st), by = "gene")
+  stopifnot(nrow(d) == 16L)              # all 16 genes, no silent loss
+  ct <- suppressWarnings(cor.test(d$microarray, d$RTqPCR, method = "spearman"))
+  rs <- unname(ct$estimate); pv <- ct$p.value
+
+  # Significant stages (p < 0.05) get a blue fitted line; non-significant
+  # stages keep a neutral grey line. Blue is the conventional "fitted model"
+  # colour and is reserved here for significance; red is not used (in this
+  # thesis red denotes the trh data trace in Fig 5.3, not a regression fit).
+  sig       <- pv < 0.05
+  line_col  <- if (sig) PAL_INK[["fit"]] else PAL_INK[["neutral"]]
+
+  # Annotation placement: stages 11 and 12 have a data point in the top-left
+  # corner, so their R_s / p labels go to the BOTTOM-left; all other stages
+  # keep the labels top-left where the corner is clear.
+  if (st %in% c(11L, 12L)) {
+    lab_x <- Inf;  lab_y <- -Inf
+    h_rs  <- 1.12; v_rs  <- -3.4
+    h_p   <- 1.12; v_p   <- -1.7   # bottom-right, stacked upward
+  } else {
+    lab_x <- -Inf; lab_y <-  Inf
+    h_rs  <- -0.12; v_rs <-  1.5
+    h_p   <- -0.12; v_p  <-  3.2   # top-left, stacked downward
+  }
+
+  list(
+    stage = st, n = nrow(d), Rs = rs, p = pv, data = d, sig = sig,
+    plot  = ggplot(d, aes(x = RTqPCR, y = microarray)) +
+      geom_point(size = 2) +
+      stat_smooth(method = "lm", formula = y ~ x,
+                  se = FALSE, colour = line_col, linewidth = 0.6) +
+      ggtitle(paste("Stage", st)) +
+      labs(tag = panel_tag,
+           x   = expression("RT-qPCR " * log[2] * " FC"),
+           y   = expression("microarray " * log[2] * " FC")) +
+      annotate("text", x = lab_x, y = lab_y, hjust = h_rs, vjust = v_rs,
+               parse = TRUE, size = 3.5,
+               label = sprintf("italic(R)[s] == %.2f", rs)) +
+      annotate("text", x = lab_x, y = lab_y, hjust = h_p, vjust = v_p,
+               parse = TRUE, size = 3.5,
+               label = sprintf("italic(p) == %.3f", pv)) +
+      theme_classic() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+            plot.tag   = element_text(size = 14))
+  )
+}
+
+panels <- Map(build_panel, stage_ids, LETTERS[seq_along(stage_ids)])
+
+rtqpcr_stats <- data.frame(
+  stage = paste("Stage", stage_ids),
+  Rs    = vapply(panels, `[[`, numeric(1), "Rs"),
+  p     = vapply(panels, `[[`, numeric(1), "p")
+)
+print(rtqpcr_stats)
+
+# 3 rows x 2 cols (panels A-E + one empty slot) -> single fig5_4.png
+fig5_5 <- (panels[[1]]$plot | panels[[2]]$plot) /
+          (panels[[3]]$plot | panels[[4]]$plot) /
+          (panels[[5]]$plot | plot_spacer())
+ggsave(file.path(FIGURES_DIR, "fig5_4.png"),
+       plot = fig5_5, width = 8, height = 11, dpi = 300)
+print(fig5_5)
+```
+
+---
+
+```{r ch5-microarray-fisher-concordance, include=TRUE, eval=TRUE}
+# ---- Section 5.4: rank concordance analysis, not Venn ----
+# Inputs: Limma per-stage outputs (st13, st14), Fisher 2022 modERN
+# trh-RNAi DESeq2 table. Outputs: fig5_5_concordance.png,
+# merged_microarray_fisher_st{13,14}.csv, microarray_validated_st{13,14}.csv,
+# values in results/reported_values.tsv. Re-running overwrites all outputs.
+ 
+suppressPackageStartupMessages({
+  library(readr); library(readxl); library(dplyr)
+  library(tidyr); library(ggplot2); library(patchwork); library(hexbin)
+})
+ 
+# ---- Paths ----
+P_LIMMA_ST13 <- file.path(CH5_INPUT_DIR, "R13.vsn.limma.fdr.txt.gz")
+P_LIMMA_ST14 <- file.path(CH5_INPUT_DIR, "R14.vsn.limma.fdr.txt.gz")
+P_FISHER_XLS <- file.path(CH5_INPUT_DIR,
+                          "modERN_Resource_RNAi_Table_S43_trh_GENETICS-2022-305822.xlsx")
+for (P in c(P_LIMMA_ST13, P_LIMMA_ST14, P_FISHER_XLS)) {
+  if (!file.exists(P))
+    stop("Missing input for concordance analysis: ", P)
+}
+ 
+# ---- 1. Parse Limma microarray output (skip '#' comment header) ----
+read_limma <- function(path) {
+  raw <- readLines(path); raw <- raw[!grepl("^#", raw)]
+  read.delim(text = paste(raw, collapse = "\n"),
+             header = TRUE, sep = "\t",
+             stringsAsFactors = FALSE, check.names = FALSE)
+}
+ 
+clean_limma <- function(d) {
+  # probes with multi-FBgn assignment are expanded to one row per FBgn
+  d$logFC <- as.numeric(d$logFC); d$P.Value <- as.numeric(d$P.Value)
+  d$adj.P.Val <- as.numeric(d$adj.P.Val)
+  d <- d[grepl("FBgn\\d+", d$FBgn), , drop = FALSE]
+ 
+  fb_list  <- strsplit(d$FBgn, ",")
+  sym_list <- strsplit(sub(",$", "", d$GeneName), ",")
+  lens     <- vapply(fb_list, length, integer(1))
+  d_exp    <- d[rep(seq_len(nrow(d)), lens), , drop = FALSE]
+  d_exp$FBgn <- unlist(fb_list)
+  d_exp$symbol <- unlist(lapply(seq_along(fb_list), function(i) {
+    s <- sym_list[[i]]; n <- lens[i]
+    if (length(s) == n) s else rep(s[1], n)
+  }))
+ 
+  # gene-level aggregation: keep most-significant probe per FBgn
+  d_exp <- d_exp[order(d_exp$adj.P.Val), , drop = FALSE]
+  d_exp <- d_exp[!duplicated(d_exp$FBgn), , drop = FALSE]
+  d_exp[, c("FBgn", "symbol", "logFC", "P.Value", "adj.P.Val")]
+}
+ 
+l13 <- clean_limma(read_limma(P_LIMMA_ST13))
+l14 <- clean_limma(read_limma(P_LIMMA_ST14))
+ 
+# ---- 2. Parse Fisher DESeq2 sheet and resolve symbols -> FBgn ----
+fis <- read_excel(P_FISHER_XLS, sheet = "DESeq2 CSV") |>
+  dplyr::rename(symbol = `gene name`,
+         log2FC_fisher_0_1.5  = `log2FoldChange.trh_0.1.5`,
+         padj_fisher_0_1.5    = `padj.trh_0.1.5`,
+         log2FC_fisher_6_8    = `log2FC_6.8`,
+         padj_fisher_6_8      = `padj_6.8`,
+         log2FC_fisher_16_18  = `log2FC_16.18`,
+         padj_fisher_16_18    = `padj_16.18`) |>
+  dplyr::filter(!is.na(symbol))
+ 
+sym2fbgn <- setNames(l13$FBgn, l13$symbol)
+fis$FBgn <- sym2fbgn[fis$symbol]
+n_fisher_total  <- nrow(fis)
+n_fisher_mapped <- sum(!is.na(fis$FBgn))
+ 
+fis <- fis |> dplyr::filter(!is.na(FBgn)) |>
+  dplyr::group_by(FBgn) |> dplyr::arrange(padj_fisher_6_8) |> dplyr::slice(1) |> ungroup()
+ 
+# ---- 3. Merge per-stage ----
+merge_stage <- function(limma_d, fis_d, stage_lbl) {
+  limma_d |>
+    dplyr::rename(logFC_microarray = logFC,
+           P_microarray     = P.Value,
+           padj_microarray  = adj.P.Val) |>
+    inner_join(fis_d |> dplyr::select(FBgn,
+                               log2FC_fisher_0_1.5, padj_fisher_0_1.5,
+                               log2FC_fisher_6_8,   padj_fisher_6_8,
+                               log2FC_fisher_16_18, padj_fisher_16_18),
+               by = "FBgn") |>
+    dplyr::mutate(stage = stage_lbl)
+}
+m13 <- merge_stage(l13, fis, "st13")
+m14 <- merge_stage(l14, fis, "st14")
+ 
+write_csv(m13, file.path(CH5_OUT_DIR, "merged_microarray_fisher_st13.csv"))
+write_csv(m14, file.path(CH5_OUT_DIR, "merged_microarray_fisher_st14.csv"))
+ 
+# ---- 4. Concordance statistics ----
+windows <- c(early = "log2FC_fisher_0_1.5",
+             mid   = "log2FC_fisher_6_8",
+             late  = "log2FC_fisher_16_18")
+ 
+concord_one <- function(d, ywin) {
+  s <- d[, c("logFC_microarray", ywin)] |> drop_na()
+  sp <- suppressWarnings(cor.test(s$logFC_microarray, s[[ywin]],
+                                  method = "spearman", exact = FALSE))
+  data.frame(n = nrow(s),
+             rho = unname(sp$estimate),
+             p = sp$p.value,
+             sign_concord = mean(sign(s$logFC_microarray) == sign(s[[ywin]])))
+}
+ 
+stat13 <- lapply(windows, concord_one, d = m13) |> setNames(names(windows))
+stat14 <- lapply(windows, concord_one, d = m14) |> setNames(names(windows))
+ 
+# ---- 5. Validated subsets: microarray |logFC|>=0.49, padj<0.55, ----
+# ---- Fisher 6-8h |log2FC|>=0.49, padj<0.05 ----
+mar_st13_set <- m13 |>
+  dplyr::filter(abs(logFC_microarray) >= 0.49, padj_microarray < 0.55) |>
+  pull(FBgn)
+mar_st14_set <- m14 |>
+  dplyr::filter(abs(logFC_microarray) >= 0.49, padj_microarray < 0.55) |>
+  pull(FBgn)
+fisher_set <- m13 |>
+  dplyr::filter(abs(log2FC_fisher_6_8) >= 0.49, padj_fisher_6_8 < 0.05) |>
+  pull(FBgn)
+ 
+valid_st13 <- intersect(mar_st13_set, fisher_set)
+valid_st14 <- intersect(mar_st14_set, fisher_set)
+ 
+writeLines(c("FBgnID", valid_st13),
+           file.path(CH5_OUT_DIR, "microarray_validated_st13.csv"))
+writeLines(c("FBgnID", valid_st14),
+           file.path(CH5_OUT_DIR, "microarray_validated_st14.csv"))
+ 
+sub13 <- m13 |> dplyr::filter(FBgn %in% valid_st13)
+sub14 <- m14 |> dplyr::filter(FBgn %in% valid_st14)
+sign_c_valid_st13 <- mean(sign(sub13$logFC_microarray) ==
+                          sign(sub13$log2FC_fisher_6_8))
+sign_c_valid_st14 <- mean(sign(sub14$logFC_microarray) ==
+                          sign(sub14$log2FC_fisher_6_8))
+ 
+cat(sprintf("Validated subset: st13=%d, st14=%d, union=%d, intersection=%d\n",
+            length(valid_st13), length(valid_st14),
+            length(union(valid_st13, valid_st14)),
+            length(intersect(valid_st13, valid_st14))))
+cat(sprintf("Genome-wide rho st13 vs Fisher 6–8h: %.3f  (n=%d)\n",
+            stat13$mid$rho, stat13$mid$n))
+cat(sprintf("Genome-wide rho st14 vs Fisher 6–8h: %.3f  (n=%d)\n",
+            stat14$mid$rho, stat14$mid$n))
+ 
+# ---- 6. Figure: 6-panel concordance scatter ----
+# Per-window x-scaling; shared log10 density colourbar; concordant-quadrant
+# tint; "OLS trend" and "Validated subset" legend keys; role-named headers.
+# ASCII hyphens in plotted text. Requires hexbin (loaded in ch5-setup chunk).
+
+# Per-window symmetric x-limits: cover ~99.5% of |FC| and enclose every
+# validated (red) point, so no highlighted DEG is clipped off-panel (the
+# validated genes have larger FC than the bulk by construction). Round up to 0.1.
+xlim_for <- function(col) {
+  allv <- c(m13[[col]], m14[[col]])
+  red  <- c(m13[[col]][m13$FBgn %in% valid_st13],
+            m14[[col]][m14$FBgn %in% valid_st14])
+  need <- max(quantile(abs(allv), 0.995, na.rm = TRUE),
+              max(abs(red), na.rm = TRUE))
+  l <- ceiling(need * 10) / 10
+  c(-l, l)
+}
+.wins  <- c("log2FC_fisher_0_1.5", "log2FC_fisher_6_8", "log2FC_fisher_16_18")
+.xlims <- sapply(.wins, xlim_for)
+
+# Shared fill limits: global max hexbin count across all six panels. Must mirror
+# the panel binning exactly (visible window only, xbins = 34) or the colourbar
+# ceiling will not match the darkest hexagon actually drawn.
+.gmax <- 0
+.yl <- c(-1.5, 1.5)
+for (i in seq_along(.wins)) {
+  ww <- .wins[i]; lim <- .xlims[, i]
+  for (mm in list(m13, m14)) {
+    dd <- mm[, c(ww, "logFC_microarray")]; dd <- dd[stats::complete.cases(dd), ]
+    dd <- dd[dd[[ww]] >= lim[1] & dd[[ww]] <= lim[2] &
+             dd$logFC_microarray >= .yl[1] & dd$logFC_microarray <= .yl[2], ]
+    hbc <- hexbin::hexbin(dd[[ww]], dd$logFC_microarray, xbins = 34)@count
+    .gmax <- max(.gmax, hbc)
+  }
+}
+
+make_panel <- function(m, ywin, xlim, highlight_fbgn, xlab, show_y, show_x,
+                       label_pos = "topleft") {
+  d <- m |> dplyr::select(FBgn, logFC_microarray, all_of(ywin)) |> drop_na()
+  names(d)[3] <- "fisher_fc"
+  d$highlight <- d$FBgn %in% highlight_fbgn
+  rho <- suppressWarnings(cor(d$logFC_microarray, d$fisher_fc,
+                              method = "spearman"))
+  sign_c <- mean(sign(d$logFC_microarray) == sign(d$fisher_fc))
+  # blank line before "n =" opens vertical space; hjust = 0 (below) keeps all
+  # three lines flush-left at the same edge.
+  lbl <- sprintf("Spearman rho = %.3f\nsign concord. = %.0f%%\n\nn = %s",
+                 rho, 100 * sign_c, format(nrow(d), big.mark = ""))
+  yl <- c(-1.5, 1.5)
+  # Bin only the data inside the display window, so hexagon size is tied to the
+  # visible range and is not magnified by coord_cartesian zoom (binning the full
+  # +-3 range then zooming to +-1 stretches the hexagons). Stats, trend line and
+  # highlighted points still use the full data (d).
+  dv <- d |> dplyr::filter(fisher_fc >= xlim[1], fisher_fc <= xlim[2],
+                    logFC_microarray >= yl[1], logFC_microarray <= yl[2])
+  # Text inset in data coordinates, kept off the spines. "topleft" (stage 13):
+  # anchored 5% in from the left, 4% down from the top, left-aligned. "bottomright"
+  # (stage 14, where the empty quadrant is bottom-right): anchored 5% in from the
+  # right, 4% up from the bottom, right-aligned so the block grows leftward into
+  # the whitespace without overflowing the panel.
+  if (label_pos == "bottomright") {
+    tx <- xlim[2] - diff(xlim) * 0.05; thj <- 1
+    ty <- yl[1]   + diff(yl)   * 0.04; tvj <- 0
+  } else {
+    tx <- xlim[1] + diff(xlim) * 0.05; thj <- 0
+    ty <- yl[2]   - diff(yl)   * 0.04; tvj <- 1
+  }
+  ggplot(d, aes(fisher_fc, logFC_microarray)) +
+    # tint the two concordant (agreement) quadrants: both up / both down
+    annotate("rect", xmin = 0, xmax = xlim[2], ymin = 0, ymax = yl[2],
+             fill = PAL_INK[["highlight_band"]], alpha = 0.05) +
+    annotate("rect", xmin = xlim[1], xmax = 0, ymin = yl[1], ymax = 0,
+             fill = PAL_INK[["highlight_band"]], alpha = 0.05) +
+    geom_hline(yintercept = 0, linewidth = 0.25, colour = PAL_INK[["neutral"]]) +
+    geom_vline(xintercept = 0, linewidth = 0.25, colour = PAL_INK[["neutral"]]) +
+    geom_hex(data = dv, aes(fill = after_stat(count)), bins = 34) +
+    scale_fill_gradient(low = PAL_SEQ(9)[9], high = PAL_SEQ(9)[1], trans = "log10",
+                        name = "Genes per\nhexbin", limits = c(1, .gmax),
+                        breaks = c(1, 10, 100), oob = scales::squish) +
+    geom_smooth(aes(colour = "OLS trend"), method = "lm", se = FALSE,
+                linewidth = 0.6, linetype = "dashed") +
+    scale_colour_manual(values = c("OLS trend" = PAL_INK[["fit"]]), name = NULL) +
+    geom_point(data = subset(d, highlight),
+               aes(shape = "Validated subset"),
+               colour = PAL_INK[["emphasis"]], size = 1.3, alpha = 0.9) +
+    scale_shape_manual(values = c("Validated subset" = 16), name = NULL) +
+    annotate("text", x = tx, y = ty, hjust = thj, vjust = tvj,
+             label = lbl, size = 2.5, lineheight = 0.95) +
+    scale_x_continuous(expand = expansion(mult = 0.03)) +
+    scale_y_continuous(expand = expansion(mult = 0.03)) +
+    coord_cartesian(xlim = xlim, ylim = yl) +
+    labs(x = if (show_x) xlab else NULL,
+         y = if (show_y) "Microarray log2 FC" else NULL) +
+    theme_classic(base_size = 9) +
+    theme(axis.title = element_text(size = 8),
+          axis.text.y = if (show_y) element_text() else element_blank(),
+          plot.margin = margin(2, 4, 2, 2))
+}
+
+# Column headers name the biological role; row headers name the stage.
+.xlabs <- c("Fisher 0-1.5 h log2 FC", "Fisher 6-8 h log2 FC",
+            "Fisher 16-18 h log2 FC")
+.csub  <- c("Fisher 0-1.5 h", "Fisher 6-8 h", "Fisher 16-18 h")
+.ctitle<- c("Negative control", "Temporal proxy (closest)",
+            "Developmental endpoint")
+mk_hdr <- function(t, s)
+  ggplot() +
+    annotate("text", x = 0, y = 0.62, label = t, fontface = "bold", size = 3.2) +
+    annotate("text", x = 0, y = 0.15, label = s, size = 2.7, colour = PAL_INK[["annotation"]]) +
+    theme_void() + coord_cartesian(ylim = c(0, 1))
+mk_row <- function(t)
+  ggplot() + annotate("text", x = 0, y = 0, label = t, fontface = "bold",
+                      size = 3, angle = 90) + theme_void()
+.hdrs  <- Map(mk_hdr, .ctitle, .csub)
+
+legend_theme <- theme(legend.position = "right",
+                      legend.key.size = unit(0.36, "cm"),
+                      legend.title = element_text(size = 7.5),
+                      legend.text  = element_text(size = 7))
+guide_spec <- guides(
+  fill   = guide_colourbar(order = 1, barheight = unit(1.6, "cm")),
+  colour = guide_legend(order = 2, override.aes = list(linetype = "dashed")),
+  shape  = guide_legend(order = 3))
+
+.P <- list()
+for (i in 1:3) {
+  .P[[paste0("t13_", i)]] <-
+    make_panel(m13, .wins[i], .xlims[, i], valid_st13, .xlabs[i],
+               show_y = (i == 1), show_x = FALSE) + legend_theme + guide_spec
+  .P[[paste0("t14_", i)]] <-
+    make_panel(m14, .wins[i], .xlims[, i], valid_st14, .xlabs[i],
+               show_y = (i == 1), show_x = TRUE,
+               label_pos = "bottomright") + legend_theme + guide_spec
+}
+
+.design <- "
+.AAABBBCCC
+DEEEFFFGGG
+HIIIJJJKKK
+"
+p_grid <-
+  plot_spacer() + .hdrs[[1]] + .hdrs[[2]] + .hdrs[[3]] +
+  mk_row("Stage 13") + .P[["t13_1"]] + .P[["t13_2"]] + .P[["t13_3"]] +
+  mk_row("Stage 14") + .P[["t14_1"]] + .P[["t14_2"]] + .P[["t14_3"]] +
+  plot_layout(design = .design,
+              widths  = c(0.10, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+              heights = c(0.14, 1, 1), guides = "collect") &
+  theme(legend.position = "right")
+
+ggsave(file.path(FIGURES_DIR, "fig5_5_concordance.png"),
+       plot = p_grid, width = 11, height = 7.2, units = "in", dpi = 300)
+ 
+
+# ---- 8. Expose objects to the rest of Chapter 5 ----
+# Maintains compatibility with downstream chunks that expect these names:
+marray_st13_genes      <- valid_st13
+marray_st14_genes      <- valid_st14
+marray_validated_total <- length(union(valid_st13, valid_st14))
+marray_in_fisher_st13  <- length(valid_st13)
+marray_in_fisher_st14  <- length(valid_st14)
+# not "by construction": the validated set is filtered on the Fisher 6-8 h
+# window (|log2FC_fisher_6_8| >= 0.49 & padj_fisher_6_8 < 0.05), whereas the
+# direct-target derivation downstream uses the COMBINED Fisher DEG list.
+# FBgn0029128 (tyn) clears the former and not the latter, so the two sets
+# differ by one gene. Compute it; never assume the identity.
+marray_validated_genes <- union(valid_st13, valid_st14)
+marray_in_fisher_total <- sum(marray_validated_genes %in% fisher_degs)
+stopifnot(marray_in_fisher_total <= marray_validated_total)
+marray_source          <- "live"
+```
+
+```{r ch5-chip-annotate-genes, include=TRUE, eval=TRUE}
+# ---- Annotate Trh/Tgo peaks to nearest gene ----
+# Uses ChIPseeker with TSS region of +/- 2kb (matches Chapter 3 convention).
+# A peak's "gene assignment" is the FlyBase ID of its nearest TSS within
+# the window; peaks whose nearest TSS is beyond the window are dropped.
+
+tss_window <- c(-2000L, 2000L)
+
+peakAnno_trh <- annotatePeak(
+  Trh_Tgo_joint_filt,
+  TxDb       = txdb,
+  tssRegion  = tss_window,
+  level      = "gene",
+  annoDb     = "org.Dm.eg.db",
+  verbose    = FALSE
+)
+
+peakAnno_df <- as.data.frame(peakAnno_trh)
+
+# Keep only peaks whose nearest TSS is within +/-2kb
+peak_genes_in_window <- subset(peakAnno_df, abs(distanceToTSS) <= 2000L)
+
+# FlyBase ID column from ChIPseeker is typically "geneId" (Ensembl) and
+# "ENSEMBL" or "FLYBASE" in annoDb-augmented data. Locate flexibly.
+fb_col <- {
+  if      ("FLYBASE" %in% names(peak_genes_in_window)) "FLYBASE"
+  else if ("flybase" %in% names(peak_genes_in_window)) "flybase"
+  else if ("ENSEMBL" %in% names(peak_genes_in_window)) "ENSEMBL"
+  else if ("geneId"  %in% names(peak_genes_in_window)) "geneId"
+  else stop("No FlyBase/Ensembl gene-ID column in annotated peaks. ",
+            "Available columns: ",
+            paste(names(peak_genes_in_window), collapse = ", "))
+}
+
+trh_chip_genes <- unique(peak_genes_in_window[[fb_col]])
+trh_chip_genes <- trh_chip_genes[!is.na(trh_chip_genes) &
+                                 nzchar(trh_chip_genes)]
+
+cat("Total Trh/Tgo peaks:                ", length(Trh_Tgo_joint_filt), "\n")
+cat("Peaks within +/-2kb of a TSS:       ", nrow(peak_genes_in_window), "\n")
+cat("Unique genes near Trh/Tgo peaks:    ", length(trh_chip_genes), "\n")
+```
+
+---
+
+```{r ch5-direct-targets, include=TRUE, eval=TRUE}
+# ---- Section 5.5: Define direct-target set ----
+# Direct target = gene whose TSS is within +/-2kb of a Trh/Tgo peak and
+# is differentially expressed in the Fisher trh-RNAi RNA-seq dataset.
+
+direct_targets_trh <- intersect(trh_chip_genes, fisher_degs)
+
+cat("Direct Trh/Tgo targets (ChIP n DEG):", length(direct_targets_trh), "\n")
+
+# Hypergeometric test: are direct targets enriched relative to background?
+# Null: among all dm6 genes, the proportion that are DEGs is the same
+# whether or not they have a nearby Trh/Tgo peak.
+all_dm6_genes <- keys(org.Dm.eg.db, keytype = "FLYBASE")
+
+q_overlap   <- length(intersect(trh_chip_genes, fisher_degs))
+m_in_chip   <- length(intersect(trh_chip_genes, all_dm6_genes))
+n_not_chip  <- length(all_dm6_genes) - m_in_chip
+k_in_fisher <- length(intersect(fisher_degs, all_dm6_genes))
+
+# Probability of observing >= q_overlap by chance:
+p_hyper_trh <- phyper(q_overlap - 1L, k_in_fisher,
+                      length(all_dm6_genes) - k_in_fisher,
+                      m_in_chip, lower.tail = FALSE)
+fold_enrich_trh <- (q_overlap / m_in_chip) /
+                   (k_in_fisher / length(all_dm6_genes))
+
+cat(sprintf("Hypergeometric p (direct target enrichment): %.3g\n",
+            p_hyper_trh))
+cat(sprintf("Fold enrichment over background:             %.2f\n",
+            fold_enrich_trh))
+
+# Restrict draw and DEG set to the 11120-gene merged microarray/RNA-seq
+# table (the testable universe). trh_chip_genes comes from all annotated
+# dm6 genes, so part of it falls outside this universe.
+univ_genes  <- unique(m13$FBgn[!is.na(m13$FBgn)])
+chip_in_u   <- intersect(trh_chip_genes, univ_genes)
+degs_in_u   <- intersect(fisher_degs,    univ_genes)
+ov_in_u     <- intersect(chip_in_u,      degs_in_u)
+
+u_N <- length(univ_genes); u_n <- length(chip_in_u)
+u_K <- length(degs_in_u);  u_k <- length(ov_in_u)
+stopifnot(u_n <= u_N, u_K <= u_N, u_k <= min(u_n, u_K))
+
+u_exp  <- u_n * u_K / u_N
+u_fold <- u_k / u_exp
+u_pdep <- phyper(u_k, u_K, u_N - u_K, u_n, lower.tail = TRUE)
+u_ft   <- fisher.test(matrix(c(u_k, u_n - u_k,
+                               u_K - u_k, u_N - u_K - u_n + u_k), 2, 2))
+# one-sided power to detect a true two-fold enrichment at this draw size
+u_crit <- qhyper(0.95, u_K, u_N - u_K, u_n)
+u_pow2 <- sum(dhyper(seq(u_crit + 1L, u_n), round(2 * u_K),
+                     u_N - round(2 * u_K), u_n))
+
+cat(sprintf(paste0("Universe-restricted: N=%d K=%d n=%d (of %d; %d outside) ",
+                   "k=%d exp=%.1f fold=%.2f p_dep=%.3f OR=%.2f [%.2f,%.2f] ",
+                   "power(2x)=%.3f\n"),
+            u_N, u_K, u_n, length(trh_chip_genes),
+            length(trh_chip_genes) - u_n, u_k, u_exp, u_fold, u_pdep,
+            u_ft$estimate, u_ft$conf.int[1], u_ft$conf.int[2], u_pow2))
+
+# Save the direct-target list
+write.csv(
+  data.frame(FBgn = direct_targets_trh),
+  file.path(CH5_OUT_DIR, "direct_targets_TrhTgo.csv"),
+  row.names = FALSE
+)
+```
+
+```{r ch5-direct-targets-table, include=TRUE, eval=TRUE}
+# Per-gene direct-target table for Section 5.5.
+# Joins 21-gene direct-target list (FBgn, from ch5-direct-targets chunk),
+# peak annotation table (signal, width, dist to TSS), and Fisher 2023
+# RNA-seq per-gene fold-change table (SYMBOL).
+# Fisher symbols mapped to FBgn via org.Dm.eg.db at join; unmappable
+# symbols printed. Output: direct_targets_with_intensity_and_fc.csv.
+
+# Pre-flight
+required <- c("direct_targets_trh", "peakAnno_df", "Trh_Tgo_joint",
+              "fb_col")
+missing  <- setdiff(required, ls(envir = .GlobalEnv))
+if (length(missing) > 0L) {
+  stop("Missing prerequisites: ", paste(missing, collapse = ", "))
+}
+
+suppressPackageStartupMessages({
+  library(org.Dm.eg.db)
+  library(AnnotationDbi)
+})
+
+# ---- Step 1: Get peak intensity for each direct target ----
+annotated <- peakAnno_df[peakAnno_df[[fb_col]] %in% direct_targets_trh, ]
+stopifnot(nrow(annotated) > 0L)
+
+annotated_gr <- GRanges(
+  seqnames = annotated$seqnames,
+  ranges   = IRanges(start = annotated$start, end = annotated$end),
+  strand   = "*"
+)
+
+ov <- findOverlaps(annotated_gr, Trh_Tgo_joint, type = "equal")
+annotated$signalValue <- NA_real_
+annotated$signalValue[queryHits(ov)] <-
+  Trh_Tgo_joint$signalValue[subjectHits(ov)]
+
+# Pick highest-signal peak per gene
+per_gene_peaks <- by(annotated,
+                     INDICES = annotated[[fb_col]],
+                     FUN = function(df) {
+                       df[which.max(df$signalValue), , drop = FALSE]
+                     })
+per_gene_peaks <- do.call(rbind, per_gene_peaks)
+per_gene_peaks <- per_gene_peaks[, c(fb_col, "SYMBOL", "width",
+                                     "signalValue", "distanceToTSS")]
+names(per_gene_peaks)[1] <- "gene_id"
+
+# ---- Step 2: Load Fisher 2023 per-gene table ----
+# the file is tab-separated and uses decimal commas
+# (European locale). Both must be specified to read.delim or numeric
+# columns will be parsed as strings.
+
+P_FISHER_PERGENE <- file.path(
+  REFERENCE_LISTS,
+  "Fisher2023_per_gene_fold_changes.csv"
+)
+
+if (!file.exists(P_FISHER_PERGENE)) {
+  stop("Fisher per-gene table not found at: ", P_FISHER_PERGENE,
+       "\nDownload from the journal supplementary materials and save ",
+       "as a TSV (tab-separated, decimal commas) at this path.")
+}
+
+# Read as TSV with decimal comma. The columns log2FC_6.8 and padj_6.8
+# refer to Fisher 2023's stage-window 6-8; log2FC_16.18 and padj_16.18
+# refer to stage-window 16-18.
+fisher_raw <- read.delim(
+  P_FISHER_PERGENE,
+  header = TRUE,
+  sep = "\t",
+  dec = ",",
+  na.strings = c("", "NA", "NaN"),
+  stringsAsFactors = FALSE,
+  strip.white = TRUE
+)
+
+# Trim whitespace from column names (in case of leading spaces)
+names(fisher_raw) <- trimws(names(fisher_raw))
+
+# Sanity check expected columns
+expected_cols <- c("gene_id", "log2FC_6.8", "padj_6.8",
+                   "log2FC_16.18", "padj_16.18")
+missing_cols <- setdiff(expected_cols, names(fisher_raw))
+if (length(missing_cols) > 0L) {
+  stop("Fisher CSV missing expected columns: ",
+       paste(missing_cols, collapse = ", "),
+       "\nAvailable: ", paste(names(fisher_raw), collapse = ", "))
+}
+
+# Confirm numeric columns parsed correctly
+stopifnot(is.numeric(fisher_raw$log2FC_6.8))
+cat("Fisher table loaded: ", nrow(fisher_raw), " genes, ",
+    "decimal-comma-parsed values numeric.\n", sep = "")
+
+# Rename the symbol column to be explicit
+names(fisher_raw)[names(fisher_raw) == "gene_id"] <- "symbol_fisher"
+fisher_raw$symbol_fisher <- trimws(fisher_raw$symbol_fisher)
+
+# ---- Step 3: Map Fisher symbols to FBgn ----
+# org.Dm.eg.db SYMBOL -> FLYBASE mapping. Many-to-one is possible but
+# rare; one-to-many is also possible (one symbol maps to multiple FBgns
+# because of historical synonyms). We take the first match per symbol
+# and report ambiguities for manual review.
+
+sym2fb <- AnnotationDbi::select(
+  org.Dm.eg.db,
+  keys     = unique(fisher_raw$symbol_fisher),
+  columns  = c("SYMBOL", "FLYBASE"),
+  keytype  = "SYMBOL"
+)
+
+# Diagnostic: how many symbols are unmappable?
+unmappable <- unique(sym2fb$SYMBOL[is.na(sym2fb$FLYBASE)])
+n_unmappable <- length(unmappable)
+cat("Symbols unmappable to FBgn: ", n_unmappable, " (",
+    sprintf("%.1f%%",
+            100 * n_unmappable / length(unique(fisher_raw$symbol_fisher))),
+    ")\n", sep = "")
+if (n_unmappable > 0L && n_unmappable <= 20L) {
+  cat("Unmappable symbols (first 20):\n")
+  cat(paste("  ", head(unmappable, 20), collapse = "\n"), "\n")
+}
+
+# Diagnostic: how many symbols map to multiple FBgns?
+multi <- sym2fb[!is.na(sym2fb$FLYBASE), ]
+multi_counts <- table(multi$SYMBOL)
+multi_symbols <- names(multi_counts[multi_counts > 1L])
+cat("Symbols mapping to >1 FBgn: ", length(multi_symbols), "\n", sep = "")
+if (length(multi_symbols) > 0L && length(multi_symbols) <= 20L) {
+  cat("Multi-mapping (taking first):\n")
+  for (s in head(multi_symbols, 20)) {
+    cat("  ", s, " -> ",
+        paste(multi$FLYBASE[multi$SYMBOL == s], collapse = ", "),
+        "\n", sep = "")
+  }
+}
+
+# Take first FBgn per symbol (deterministic; arbitrary among ties)
+sym2fb_first <- sym2fb[!duplicated(sym2fb$SYMBOL), ]
+sym2fb_first <- sym2fb_first[!is.na(sym2fb_first$FLYBASE), ]
+
+# ---- Fisher (2023) symbols -> FlyBase gene identifiers ----
+# Fisher et al. use some historical gene symbols that differ from the current
+# org.Dm.eg.db SYMBOL for the same gene; without a synonym route the
+# symbol->FBgn join silently drops those rows, leaving blank fold-change cells
+# in the per-gene direct-target table. Symbols are mapped by current symbol,
+# then unambiguous FlyBase synonym, then CG number (map_fisher_symbols()).
+fmap <- map_fisher_symbols(fisher_raw$symbol_fisher)
+sym2fb_first <- data.frame(SYMBOL  = fmap$SYMBOL[!is.na(fmap$FLYBASE)],
+                           FLYBASE = fmap$FLYBASE[!is.na(fmap$FLYBASE)],
+                           stringsAsFactors = FALSE)
+stopifnot(sym2fb_first$FLYBASE[sym2fb_first$SYMBOL == "RpII18"] == "FBgn0003275",
+          sym2fb_first$FLYBASE[sym2fb_first$SYMBOL == "CG6752"] == "FBgn0038296",
+          sym2fb_first$FLYBASE[sym2fb_first$SYMBOL == "RpII15"] == "FBgn0004855")
+
+# Attach FBgn to Fisher table
+fisher_raw$gene_id <- sym2fb_first$FLYBASE[
+  match(fisher_raw$symbol_fisher, sym2fb_first$SYMBOL)
+]
+
+# Drop rows with no FBgn match (can't be joined)
+n_before <- nrow(fisher_raw)
+fisher_mapped <- fisher_raw[!is.na(fisher_raw$gene_id), ]
+n_dropped <- n_before - nrow(fisher_mapped)
+cat("Fisher rows after FBgn mapping: ", nrow(fisher_mapped),
+    " (", n_dropped, " dropped, no FBgn)\n", sep = "")
+
+# Handle duplicate FBgn -> symbol (rare): keep the row with the
+# strongest signal (lowest p across both stages)
+if (any(duplicated(fisher_mapped$gene_id))) {
+  fisher_mapped$min_padj <- pmin(fisher_mapped$padj_6.8,
+                                  fisher_mapped$padj_16.18,
+                                  na.rm = TRUE)
+  fisher_mapped <- fisher_mapped[order(fisher_mapped$gene_id,
+                                        fisher_mapped$min_padj), ]
+  fisher_mapped <- fisher_mapped[!duplicated(fisher_mapped$gene_id), ]
+  fisher_mapped$min_padj <- NULL
+}
+
+# ---- Step 4: Join ----
+joined <- merge(
+  per_gene_peaks,
+  fisher_mapped[, c("gene_id", "symbol_fisher",
+                    "log2FC_6.8", "padj_6.8",
+                    "log2FC_16.18", "padj_16.18")],
+  by    = "gene_id",
+  all.x = TRUE,
+  sort  = FALSE
+)
+
+# Diagnostic: how many of the 21 direct targets have Fisher data?
+n_with_fisher <- sum(!is.na(joined$log2FC_6.8) |
+                     !is.na(joined$log2FC_16.18))
+cat("\nDirect targets with Fisher fold-change data: ",
+    n_with_fisher, " / ", nrow(joined), "\n", sep = "")
+
+if (n_with_fisher < nrow(joined)) {
+  cat("Direct targets WITHOUT Fisher data (FBgn -> symbol mismatch ",
+      "or gene absent from Fisher 2023):\n", sep = "")
+  no_fisher <- joined[is.na(joined$log2FC_6.8) &
+                      is.na(joined$log2FC_16.18), ]
+  for (i in seq_len(nrow(no_fisher))) {
+    cat("  ", no_fisher$gene_id[i], " (",
+        no_fisher$SYMBOL[i], ")\n", sep = "")
+  }
+}
+
+# ---- Step 5: Sort by signal value and write ----
+joined <- joined[order(-joined$signalValue), ]
+
+write.csv(joined,
+          file.path(CH5_OUT_DIR, "direct_targets_with_intensity_and_fc.csv"),
+          row.names = FALSE)
+cat("\nWrote: direct_targets_with_intensity_and_fc.csv (",
+    nrow(joined), " rows)\n", sep = "")
+
+# ---- Step 6: Print the table ----
+print(joined, row.names = FALSE)
+cat("\nNote: SYMBOL column is from org.Dm.eg.db (peak annotation).\n")
+cat("Fisher's own symbol_fisher column may differ; both are in the CSV.\n")
+```
+```{r ch5-direct-targets-mapping-sensitivity, include=TRUE, eval=TRUE}
+# Sensitivity of the direct-target set to how the Fisher et al. (2023) table is
+# joined. The DEG list behind the 21-gene set (Fisher_combined_DEGs.csv) was
+# built with |log2FC| >= 0.49 and matched Fisher symbols to current FlyBase
+# symbols. The same rule is re-applied here with FlyBase-synonym mapping
+# (map_fisher_symbols()), at the stated cut (0.49) and at exactly
+# log2(1.4) = 0.485 (the unrounded 1.4-fold cut). The 21-gene set is the
+# reported set; these values are reported as a sensitivity analysis.
+fs <- read.delim(file.path(REFERENCE_LISTS, "Fisher2023_per_gene_fold_changes.csv"),
+                 header = TRUE, sep = "\t", dec = ",", na.strings = c("", "NA", "NaN"),
+                 stringsAsFactors = FALSE, strip.white = TRUE)
+names(fs) <- trimws(names(fs))
+fsm <- map_fisher_symbols(fs$gene_id)
+fs$FBgn <- fsm$FLYBASE[match(trimws(fs$gene_id), fsm$SYMBOL)]
+rule_degs <- function(thr) with(fs, unique(FBgn[!is.na(FBgn) & (
+  (!is.na(padj_6.8)   & padj_6.8   < 0.05 & abs(log2FC_6.8)   >= thr) |
+  (!is.na(padj_16.18) & padj_16.18 < 0.05 & abs(log2FC_16.18) >= thr))]))
+univ_test <- function(degs) {
+  cu <- intersect(trh_chip_genes, univ_genes); du <- intersect(degs, univ_genes)
+  k <- length(intersect(cu, du)); N <- length(univ_genes); n <- length(cu); K <- length(du)
+  ft <- fisher.test(matrix(c(k, n - k, K - k, N - K - n + k), 2, 2))
+  list(k = k, K = K, exp = n * K / N, or = unname(ft$estimate), ci = ft$conf.int)
+}
+dt_049   <- intersect(trh_chip_genes, rule_degs(0.49))
+dt_exact <- intersect(trh_chip_genes, rule_degs(log2(1.4)))
+stopifnot(all(direct_targets_trh %in% dt_exact), length(direct_targets_trh) == 21L)
+u_exact <- univ_test(rule_degs(log2(1.4)))
+u_049   <- univ_test(rule_degs(0.49))
+cat(sprintf("mapping: %d symbols, %d recovered by synonym/CG, %d unmapped\n",
+            nrow(fsm), sum(fsm$route %in% c("alias", "flybasecg")), sum(is.na(fsm$FLYBASE))))
+cat(sprintf("targets: reported %d | synonym map, cut 0.49: %d | synonym map, exact 1.4-fold: %d\n",
+            length(direct_targets_trh), length(dt_049), length(dt_exact)))
+cat("added under the exact 1.4-fold rule:", setdiff(dt_exact, direct_targets_trh), "\n")
+save_values("ch5_fisher_mapping", list(
+  nFisherAliasRecovered   = sum(fsm$route %in% c("alias", "flybasecg")),
+  nFisherUnmapped         = sum(is.na(fsm$FLYBASE)),
+  fisherDegLogFcCut       = "0.49",
+  nDirectTargetsAliasFix  = length(dt_049),
+  nDirectTargetsExactRule = length(dt_exact),
+  dtAliasUnivK            = u_049$k,
+  dtAliasUnivExpected     = sprintf("%.1f", u_049$exp),
+  dtAliasUnivOR           = sprintf("%.2f", u_049$or),
+  dtAliasUnivCIlo         = sprintf("%.2f", u_049$ci[1]),
+  dtAliasUnivCIhi         = sprintf("%.2f", u_049$ci[2]),
+  dtExactUnivK            = u_exact$k,
+  dtExactUnivExpected     = sprintf("%.1f", u_exact$exp),
+  dtExactUnivOR           = sprintf("%.2f", u_exact$or),
+  dtExactUnivCIlo         = sprintf("%.2f", u_exact$ci[1]),
+  dtExactUnivCIhi         = sprintf("%.2f", u_exact$ci[2])
+))
+```
+
+
+
+```{r ch5-tissue-filter-21to21, include=TRUE, eval=TRUE}
+# Annotates 21-gene direct-target set using 21gene_tissue_annotation.csv.
+# Retains gene if Y in trachea, sal_gland or cns_midline; outputs tissue_filtered_21to21.csv.
+# Computes nDirectTargetsFiltered/nDirectTargetsExcluded for the ch5-export-computed-values chunk.
+
+# Pre-flight: the 21-gene direct-target set must exist in memory.
+stopifnot(exists("direct_targets_trh"))
+stopifnot(length(direct_targets_trh) > 0L)
+
+# Path: curator places the CSV in CH5_INPUT_DIR.
+P_TISSUE_ANNOT <- file.path(CH5_INPUT_DIR, "21gene_tissue_annotation.csv")
+
+if (!file.exists(P_TISSUE_ANNOT)) {
+  warning(
+    "Tissue annotation CSV not found at:\n  ", P_TISSUE_ANNOT,
+    "\nThe tissue-annotation step will be skipped and the retained/excluded\n",
+    "counts recorded as NA."
+  )
+  n_retained_tissue <- NA_integer_
+  n_excluded_tissue <- NA_integer_
+} else {
+
+  tissue_annot <- read.csv(P_TISSUE_ANNOT, stringsAsFactors = FALSE)
+
+  # ---- Schema and content validation ----
+  required_cols <- c("gene_id", "SYMBOL", "trachea", "sal_gland",
+                     "cns_midline", "in_bdgp")
+  missing_cols  <- setdiff(required_cols, names(tissue_annot))
+  if (length(missing_cols) > 0L) {
+    stop("21gene_tissue_annotation.csv is missing column(s): ",
+         paste(missing_cols, collapse = ", "))
+  }
+
+  # Coerce Y/N to upper-case and strip whitespace
+  yn_cols <- c("trachea", "sal_gland", "cns_midline", "in_bdgp")
+  for (col in yn_cols) {
+    tissue_annot[[col]] <- toupper(trimws(tissue_annot[[col]]))
+  }
+
+  bad_vals <- !unlist(tissue_annot[, yn_cols]) %in% c("Y", "N")
+  if (any(bad_vals)) {
+    stop("21gene_tissue_annotation.csv contains non-{Y,N} values in ",
+         "Y/N columns. Inspect rows: ",
+         paste(which(rowSums(
+           !sapply(tissue_annot[, yn_cols], `%in%`, c("Y", "N"))
+         ) > 0), collapse = ", "))
+  }
+
+  # Row count must match the 21-gene set exactly.
+  if (nrow(tissue_annot) != length(direct_targets_trh)) {
+    stop("Row count mismatch: tissue_annot has ", nrow(tissue_annot),
+         " rows but direct_targets_trh has ",
+         length(direct_targets_trh), " genes.")
+  }
+
+  # FBgn set must match the 21-gene set exactly.
+  set_in_csv    <- setdiff(tissue_annot$gene_id, direct_targets_trh)
+  set_in_direct <- setdiff(direct_targets_trh, tissue_annot$gene_id)
+  if (length(set_in_csv) > 0L || length(set_in_direct) > 0L) {
+    stop("FBgn set mismatch between 21gene_tissue_annotation.csv and ",
+         "the direct-target set.\n",
+         "  In CSV but not in direct targets: ",
+         paste(set_in_csv, collapse = ", "), "\n",
+         "  In direct targets but not in CSV: ",
+         paste(set_in_direct, collapse = ", "))
+  }
+
+  # ---- Apply filtering rule ----
+  tissue_annot$retained <- with(
+    tissue_annot,
+    ifelse(trachea == "Y" | sal_gland == "Y" | cns_midline == "Y",
+           "Y", "N")
+  )
+
+  n_retained_tissue <- sum(tissue_annot$retained == "Y")
+  n_excluded_tissue <- sum(tissue_annot$retained == "N")
+
+  # ---- Console summary ----
+  cat("─── Spatio-temporal filter (22 → 17) ────────────────────\n")
+  cat(sprintf("Input direct-target genes:   %d\n",  nrow(tissue_annot)))
+  cat(sprintf("Retained (tissue-positive):  %d\n",  n_retained_tissue))
+  cat(sprintf("Excluded (tissue-negative):  %d\n",  n_excluded_tissue))
+
+  excluded <- tissue_annot[tissue_annot$retained == "N", ]
+  if (nrow(excluded) > 0L) {
+    cat("\nExcluded genes (symbol — exclusion reason):\n")
+    for (i in seq_len(nrow(excluded))) {
+      reason <- if (excluded$in_bdgp[i] == "N") {
+        "absent from BDGP database"
+      } else {
+        "in BDGP but not in queried tissues at stages 11–16"
+      }
+      cat(sprintf("  %-12s  %s\n", excluded$SYMBOL[i], reason))
+    }
+  }
+
+  # ---- Export annotated table ----
+  P_TISSUE_OUT <- file.path(CH5_OUT_DIR, "tissue_filtered_21to21.csv")
+  write.csv(tissue_annot, P_TISSUE_OUT, row.names = FALSE)
+  cat(sprintf("\nWrote: %s\n", P_TISSUE_OUT))
+}
+```
+
+---
+
+```{r ch5-rib-comparison, include=TRUE, eval=TRUE}
+# ---- Section 5.6: Convergence with Loganathan Rib direct targets ----
+# Two-way and three-way overlaps; Fisher's exact tests against the
+# dm6-wide gene background.
+
+trh_rib_overlap   <- intersect(direct_targets_trh, rib_target_genes)
+n_trh_rib_overlap <- length(trh_rib_overlap)
+
+# 2x2 contingency table for two-way overlap:
+#                       | DirectTarget Trh | not |
+# RibTarget             |        a         |  b  |
+# not RibTarget         |        c         |  d  |
+# Universe = all_dm6_genes
+a <- n_trh_rib_overlap
+b <- length(setdiff(rib_target_genes, direct_targets_trh))
+c2 <- length(setdiff(direct_targets_trh, rib_target_genes))
+d <- length(all_dm6_genes) - (a + b + c2)
+
+ct_2way <- matrix(c(a, b, c2, d), nrow = 2, byrow = TRUE,
+                  dimnames = list(c("Rib_target", "Not_Rib_target"),
+                                  c("Trh_target", "Not_Trh_target")))
+
+ft_2way <- fisher.test(ct_2way, alternative = "two.sided")
+
+cat("=== Trh/Tgo direct targets vs Rib direct targets ===\n")
+print(ct_2way)
+cat(sprintf("\nOR = %.2f, p = %.3g, %d-gene overlap\n",
+            unname(ft_2way$estimate), ft_2way$p.value, n_trh_rib_overlap))
+
+# Three-way overlap: Trh-ChIP genes x Fisher DEGs x Rib targets
+three_way <- Reduce(intersect, list(trh_chip_genes, fisher_degs,
+                                    rib_target_genes))
+n_three_way <- length(three_way)
+cat("\nThree-way overlap (Trh ChIP x Fisher DEG x Rib target):",
+    n_three_way, "gene(s)\n")
+if (n_three_way > 0L && n_three_way <= 30L) {
+  # Print the gene symbols for inline reference if small
+  three_way_sym <- AnnotationDbi::select(org.Dm.eg.db,
+                                          keys = three_way,
+                                          columns = c("FLYBASE", "SYMBOL"),
+                                          keytype = "FLYBASE")
+  print(three_way_sym)
+}
+
+# Save outputs
+write.csv(
+  data.frame(FBgn = trh_rib_overlap),
+  file.path(CH5_OUT_DIR, "direct_targets_Trh_Rib_overlap.csv"),
+  row.names = FALSE
+)
+write.csv(
+  data.frame(FBgn = three_way),
+  file.path(CH5_OUT_DIR, "direct_targets_three_way_overlap.csv"),
+  row.names = FALSE
+)
+```
+
+---
+
+```{r ch5-functional-enrichment, include=TRUE, eval=TRUE}
+# ---- Section 5.5/5.6: GO enrichment on direct-target set ----
+# Run on (a) all Trh/Tgo direct targets, (b) Trh-Rib overlap.
+# Skipped if clusterProfiler is unavailable or set sizes are too small.
+
+if (requireNamespace("clusterProfiler", quietly = TRUE) &&
+    length(direct_targets_trh) >= 10L) {
+
+  ego_trh <- clusterProfiler::enrichGO(
+    gene          = direct_targets_trh,
+    OrgDb         = org.Dm.eg.db,
+    keyType       = "FLYBASE",
+    ont           = "ALL",
+    pAdjustMethod = "BH",
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  if (!is.null(ego_trh) && nrow(as.data.frame(ego_trh)) > 0L) {
+    write.csv(as.data.frame(ego_trh),
+              file.path(CH5_OUT_DIR, "GO_TrhTgo_direct_targets.csv"),
+              row.names = FALSE)
+    cat("GO enrichment on Trh/Tgo direct targets: ",
+        nrow(as.data.frame(ego_trh)), " significant terms\n", sep = "")
+  } else {
+    cat("GO enrichment on Trh/Tgo direct targets: no significant terms\n")
+  }
+
+  if (length(trh_rib_overlap) >= 5L) {
+    ego_overlap <- clusterProfiler::enrichGO(
+      gene          = trh_rib_overlap,
+      OrgDb         = org.Dm.eg.db,
+      keyType       = "FLYBASE",
+      ont           = "ALL",
+      pAdjustMethod = "BH",
+      qvalueCutoff  = 0.10,    # relaxed for smaller set
+      readable      = TRUE
+    )
+    if (!is.null(ego_overlap) && nrow(as.data.frame(ego_overlap)) > 0L) {
+      write.csv(as.data.frame(ego_overlap),
+                file.path(CH5_OUT_DIR, "GO_Trh_Rib_overlap.csv"),
+                row.names = FALSE)
+      cat("GO enrichment on Trh-Rib overlap: ",
+          nrow(as.data.frame(ego_overlap)), " significant terms\n",
+          sep = "")
+    } else {
+      cat("GO enrichment on Trh-Rib overlap: no significant terms\n")
+    }
+  }
+} else {
+  cat("Skipping GO enrichment ",
+      "(clusterProfiler not installed or set too small)\n", sep = "")
+}
+```
+
+---
+
+```{r ch5-chung2011-gse28780, include=TRUE, eval=TRUE}
+# ============================================================
+#  Second perturbation axis: Chung, Chavez & Andrew (2011) trh-null
+#  microarray (GEO GSE28780, stages 11-16), intersected with Trh/Tgo peaks.
+#  Peak-gene mapping: strand-aware nearest-TSS distance, dm6 ensGene.
+#  DE: limma, 3 WT vs 3 trh-null, |FC|>=1.4 at p<=0.05; universe = genes with FlyBase ID; hypergeometric test.
+#  Result: enrichment restricted to distal peaks (>2kb from TSS); proximal (<=2kb) show none.
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(GEOquery); library(limma); library(GenomicFeatures)
+  library(org.Dm.eg.db); library(AnnotationDbi)
+})
+
+CHUNG_FC   <- log2(1.4)            # Chung 2011 fold-change threshold
+CHUNG_PMAX <- 0.05                 # Chung 2011 raw-p threshold
+TSS_SPLIT  <- 2000L                # proximal/distal boundary (matches ch5 window)
+
+##, 1. Peak -> nearest gene TSS (strand-aware, coordinate-based) ------------
+stopifnot(length(Trh_Tgo_joint_filt) == 614L)
+jp <- Trh_Tgo_joint_filt
+if (is.null(names(jp))) names(jp) <- paste0("peak_", seq_along(jp))
+g   <- suppressMessages(genes(txdb))
+# Gene ID (FBgn): use gene_id metadata column, always populated.
+# names(g) is NULL in some GenomicFeatures builds, giving a
+# zero-length column and a "differing number of rows" error.
+# Convert GRanges to data.frame in one step.
+# Individual accessors fail on some GenomicRanges/S4Vectors
+# builds with "S3coerceFUN(from) : not supported".
+gdf <- as.data.frame(g)                        # seqnames, start, end, width, strand + mcols
+gid_col <- if ("gene_id" %in% names(gdf)) "gene_id" else NULL
+if (is.null(gid_col)) {
+  # fallback: rownames carry FBgn when names(g) was non-NULL
+  gdf$fbgn <- rownames(gdf)
+} else {
+  gdf$fbgn <- as.character(gdf$gene_id)
+}
+gdf$chr    <- as.character(gdf$seqnames)
+gdf$strand <- as.character(gdf$strand)
+gdf$tss    <- ifelse(gdf$strand == "-", gdf$end, gdf$start)
+gsplit <- split(gdf, gdf$chr)
+nn <- lapply(seq_along(jp), function(i) {
+  gi <- gsplit[[ as.character(seqnames(jp)[i]) ]]
+  if (is.null(gi) || nrow(gi) == 0)
+    return(data.frame(geneId = NA_character_, dist_to_TSS = NA_integer_))
+  d <- pmax(start(jp)[i] - gi$tss, gi$tss - end(jp)[i], 0L)
+  j <- which.min(d)
+  data.frame(geneId = gi$fbgn[j], dist_to_TSS = as.integer(d[j]))
+})
+chung_pk <- cbind(data.frame(peak = names(jp),
+                             start = start(jp), end = end(jp),
+                             stringsAsFactors = FALSE),
+                  do.call(rbind, nn))
+saveRDS(chung_pk, file.path(CH5_OUT_DIR, "trh_tgo_peak_nearest_gene.rds"))
+
+##, 2. GSE28780: fresh limma DE (trh-null vs WT) ----------------------------
+options(timeout = 600)
+gse28780 <- getGEO("GSE28780", destdir = CH5_OUT_DIR,
+                   GSEMatrix = TRUE, getGPL = TRUE)[[1]]
+pd28 <- Biobase::pData(gse28780)
+fd28 <- Biobase::fData(gse28780)
+ex28 <- Biobase::exprs(gse28780)
+if (max(ex28, na.rm = TRUE) > 100) ex28 <- log2(ex28 + 1)   # ensure log2 scale
+stopifnot(ncol(ex28) == 6L)
+
+chung_grp    <- factor(ifelse(grepl("trh", pd28$title), "trhnull", "WT"),
+                       levels = c("WT", "trhnull"))          # 3 WT, 3 trh-null
+chung_design <- model.matrix(~ chung_grp)
+chung_fit    <- eBayes(lmFit(ex28, chung_design))
+chung_tt     <- topTable(chung_fit, coef = "chung_grptrhnull",
+                         number = Inf, sort.by = "none")
+chung_tt$probe   <- rownames(chung_tt)
+chung_tt$entrez1 <- sub(" ?///.*", "", fd28[chung_tt$probe, "ENTREZ_GENE_ID"])
+e2fb <- suppressMessages(AnnotationDbi::mapIds(
+          org.Dm.eg.db, keys = unique(chung_tt$entrez1[chung_tt$entrez1 != ""]),
+          column = "FLYBASE", keytype = "ENTREZID", multiVals = "first"))
+chung_tt$fbgn <- e2fb[chung_tt$entrez1]
+chung_ok      <- chung_tt[!is.na(chung_tt$fbgn), ]
+saveRDS(chung_tt, file.path(CH5_OUT_DIR, "gse28780_DE.rds"))
+
+##, 3. Responsive-gene sets and enrichment (proximal vs distal) -------------
+chung_universe <- unique(chung_ok$fbgn)
+
+# Direction is assigned per gene, not per probe: each gene is resolved to
+# its most significant probe before thresholding, so a gene with one up
+# probe and one down probe is not entered into both the `down` and `up`
+# sets. This makes the `down` and `up` sets genuinely disjoint, consistent
+# with the two being presented as directional opposites. The assertion
+# below checks that this holds.
+.chung_best <- chung_ok[order(chung_ok$fbgn, chung_ok$P.Value), ]
+.chung_best <- .chung_best[!duplicated(.chung_best$fbgn), ]
+chung_sets <- list(
+  down = .chung_best$fbgn[.chung_best$P.Value <= CHUNG_PMAX &
+                          .chung_best$logFC   <= -CHUNG_FC],
+  up   = .chung_best$fbgn[.chung_best$P.Value <= CHUNG_PMAX &
+                          .chung_best$logFC   >=  CHUNG_FC],
+  any  = .chung_best$fbgn[.chung_best$P.Value <= CHUNG_PMAX &
+                          abs(.chung_best$logFC) >= CHUNG_FC])
+stopifnot(
+  length(intersect(chung_sets$down, chung_sets$up)) == 0L,
+  length(chung_sets$down) + length(chung_sets$up) == length(chung_sets$any))
+
+# Proximal/distal must be a PARTITION of the bound genes: each gene is
+# classified once, by its CLOSEST peak, rather than by class membership of
+# each peak followed by de-duplication by gene (which would let a gene
+# nearest to both a proximal and a distal peak enter both classes). This
+# keeps the two hypergeometric tests below comparing disjoint classes.
+.chung_pk_ok <- chung_pk[!is.na(chung_pk$geneId), ]
+.chung_min   <- aggregate(dist_to_TSS ~ geneId, data = .chung_pk_ok, FUN = min)
+chung_prox  <- .chung_min$geneId[.chung_min$dist_to_TSS <= TSS_SPLIT]
+chung_dist  <- .chung_min$geneId[.chung_min$dist_to_TSS >  TSS_SPLIT]
+chung_bound <- .chung_min$geneId
+stopifnot(
+  length(intersect(chung_prox, chung_dist)) == 0L,
+  length(chung_prox) + length(chung_dist) == length(chung_bound))
+
+chung_hyper <- function(pgset, deset) {
+  pgset <- intersect(pgset, chung_universe)
+  deset <- intersect(deset, chung_universe)
+  ov    <- intersect(pgset, deset)
+  expd  <- length(pgset) * length(deset) / length(chung_universe)
+  data.frame(n_peak = length(pgset), n_DE = length(deset), overlap = length(ov),
+             expected = expd, fold = length(ov) / expd,
+             p = phyper(length(ov) - 1L, length(deset),
+                        length(chung_universe) - length(deset),
+                        length(pgset), lower.tail = FALSE))
+}
+chung_enrich <- do.call(rbind, lapply(
+  list(c("prox","down"),c("prox","up"),c("prox","any"),
+       c("dist","down"),c("dist","up"),c("dist","any")),
+  function(cc) { r <- chung_hyper(get(paste0("chung_", cc[1])), chung_sets[[cc[2]]])
+                 r$loc <- cc[1]; r$set <- cc[2]; r }))
+write.csv(chung_enrich[, c("loc","set","n_peak","overlap","expected","fold","p")],
+          file.path(CH5_OUT_DIR, "chung_distal_proximal_enrichment.csv"),
+          row.names = FALSE)
+print(chung_enrich[, c("loc","set","overlap","expected","fold","p")])
+
+# High-confidence set: bound and responsive in both Chung and Fisher 2023.
+# chung_sets$down is based on Chung fold-change only
+chung_conj_any  <- Reduce(intersect, list(chung_bound, fisher_degs, chung_sets$any))
+chung_conj_down <- Reduce(intersect, list(chung_bound, fisher_degs, chung_sets$down))
+hc <- chung_ok[match(chung_conj_any, chung_ok$fbgn),
+               c("fbgn","logFC","P.Value")]
+hc$symbol      <- suppressMessages(AnnotationDbi::mapIds(
+                    org.Dm.eg.db, keys = hc$fbgn, column = "SYMBOL",
+                    keytype = "FLYBASE", multiVals = "first"))
+hc$dist_to_TSS <- chung_pk$dist_to_TSS[match(hc$fbgn, chung_pk$geneId)]
+
+##, 4a. Cross-platform DIRECTIONAL concordance ------------------------------
+# Fisher direction is taken from the better-supported of the two stage windows
+# (smaller BH-adjusted p). `fr` is the Fisher per-gene table built in the
+# TEST 2 chunk; if it is not in session, source that chunk first.
+stopifnot(exists("fr"))
+.fi <- fr[match(hc$fbgn, fr$gene_id), ]
+.use68 <- !is.na(.fi$padj_6.8) &
+          (is.na(.fi$padj_16.18) | .fi$padj_6.8 <= .fi$padj_16.18)
+hc$fisher_log2FC <- ifelse(.use68, .fi$log2FC_6.8, .fi$log2FC_16.18)
+hc$fisher_padj   <- ifelse(.use68, .fi$padj_6.8,   .fi$padj_16.18)
+hc$concordant    <- sign(hc$logFC) == sign(hc$fisher_log2FC)
+
+n_conj_concordant <- sum(hc$concordant, na.rm = TRUE)
+n_conj_discordant <- sum(!hc$concordant, na.rm = TRUE)
+# Positional composition of the conjunction set. nConjDistalNovel counts genes
+# recoverable only without the +/-2 kb constraint, which for this set is the
+# distal subset itself.
+n_conj_proximal     <- sum(abs(hc$dist_to_TSS) <= 2000, na.rm = TRUE)
+n_conj_distal       <- sum(abs(hc$dist_to_TSS) >  2000, na.rm = TRUE)
+n_conj_distal_novel <- n_conj_distal
+stopifnot(n_conj_proximal + n_conj_distal == nrow(hc))
+
+hc <- hc[order(!hc$concordant, hc$P.Value), ]   # concordant block first
+write.csv(hc, file.path(CH5_OUT_DIR, "chung_fisher_highconf_targets.csv"),
+          row.names = FALSE)
+
+cat(sprintf("Conjunction: %d genes | directionally concordant %d, discordant %d\n",
+            nrow(hc), n_conj_concordant, n_conj_discordant))
+cat(sprintf("  discordant: %s\n",
+            paste(hc$symbol[!hc$concordant], collapse = ", ")))
+
+##, 4b. Universe-robustness check -------------------------------------------
+# Headline enrichment uses all array genes with an FBgn as universe.
+# Re-tests against expressed-gene universes at increasing mean log2
+# intensity cutoffs. Distal enrichment stays stable; proximal
+# enrichment drops further. Range reported in Chapter 5.
+chung_ok$meanExpr <- rowMeans(ex28[chung_ok$probe, , drop = FALSE])
+chung_gene_expr   <- tapply(chung_ok$meanExpr, chung_ok$fbgn, max)  # gene = brightest probe
+chung_robust <- do.call(rbind, lapply(c(5, 6, 7), function(cut) {
+  uni <- names(chung_gene_expr)[chung_gene_expr >= cut]
+  pgd <- intersect(chung_dist, uni); ded <- intersect(chung_sets$any, uni)
+  ovd <- intersect(pgd, ded); expd <- length(pgd) * length(ded) / length(uni)
+  data.frame(cutoff = cut, n_universe = length(uni),
+             dist_fold = length(ovd) / expd,
+             dist_p = phyper(length(ovd) - 1L, length(ded),
+                             length(uni) - length(ded), length(pgd),
+                             lower.tail = FALSE))
+}))
+write.csv(chung_robust,
+          file.path(CH5_OUT_DIR, "chung_universe_robustness.csv"),
+          row.names = FALSE)
+print(chung_robust)
+
+##, 5. Convenience scalars for the export chunk -----------------------------
+chung_get <- function(loc, set, col)
+  chung_enrich[chung_enrich$loc == loc & chung_enrich$set == set, col]
+cat(sprintf("Chung GSE28780: universe=%d, bound-on-array=%d (prox=%d, dist=%d)\n",
+    length(chung_universe), length(intersect(chung_bound, chung_universe)),
+    length(intersect(chung_prox, chung_universe)),
+    length(intersect(chung_dist, chung_universe))))
+cat(sprintf("Distal responsive fold=%.2f (p=%.2g); proximal fold=%.2f (p=%.2g)\n",
+    chung_get("dist","any","fold"), chung_get("dist","any","p"),
+    chung_get("prox","any","fold"), chung_get("prox","any","p")))
+cat(sprintf("Chung n Fisher conjunction (any/down): %d / %d\n",
+    length(chung_conj_any), length(chung_conj_down)))
+```
+
+```{r ch5-fig-chung-distal-proximal, include=TRUE, eval=TRUE}
+# ---- Fig 5.7: distal- vs proximal-peak enrichment for trh-responsiveness ----
+# Fold enrichment (observed/expected) of Chung 2011 trh-responsive genes among
+# Trh/Tgo target genes, split by peak-to-TSS distance. Uses the shared bar
+# chart style (thesis_bar, defined in the setup chunk): contrast-aware in-bar labels, fold + (n/N),
+# significance stars spaced above the bars so they never overlap the bar top.
+# The significance legend is split across the two panels' top-right slots:
+# the n.s. key over the proximal panel, the *** key over the distal panel.
+ord    <- c("down","up","any")
+setlab <- c(down="Trh-activated\n(down in null)", up="Trh-repressed\n(up in null)",
+            any="Any\nresponse")
+loc_lab <- c(prox="Proximal peaks (\u2264 2 kb from TSS)",
+             dist="Distal peaks (> 2 kb from TSS)")
+fills56 <- setNames(unname(PAL_DIRECTION[ord]), setlab[ord])
+
+pdat <- chung_enrich
+pdat$xlab  <- factor(setlab[as.character(pdat$set)], levels = setlab[ord])
+pdat$panel <- factor(loc_lab[as.character(pdat$loc)], levels = loc_lab)
+pdat$Count <- sprintf("(%d/%d)", pdat$overlap, pdat$n_peak)
+# In-bar fold value carries an explicit "x" suffix (2.48x = 2.48-fold over
+# expected) so the number is unambiguous without mislabelling it as an or.
+pdat$Fold  <- sprintf("%.2f\u00d7", pdat$fold)
+pdat$Sig   <- thesis_stars(pdat$p)
+# Split significance legend: proximal slot -> n.s. key; distal slot -> *** key.
+# The distal panel contains a non-significant bar too (trh-activated), so its
+# key must cover both symbols, otherwise the panel has no legend entry for
+# one of its own bars.
+pdat$Nlab  <- ifelse(pdat$loc == "prox", "n.s. - not significant",
+                     "*** p < 1e-3;  n.s. - not significant")
+
+p <- thesis_bar(pdat, x = "xlab", y = "fold", fill = "xlab",
+                value = "Fold", count = "Count", sig = "Sig",
+                facet = "panel", n_lab = "Nlab", n_lab_size = 4.4, fills = fills56,
+                y_max = 3.35, dashed_at = 1,
+                y_lab = "Fold enrichment (observed / expected)")
+ggsave(file.path(FIGURES_DIR, "fig5_6_chung_distal_proximal.png"), p,
+       width = 8.3, height = 4.8, dpi = 300, bg = "white")
+cat("Wrote fig5_6_chung_distal_proximal.png\n")
+```
+
+---
+```{r ch5-test2-motif2-perturbation, include=TRUE, eval=TRUE}
+# ============================================================
+#  Test 2: does Motif2 (STRCACTGARARAAA) at Trh/Tgo peaks predict transcriptional response to trh knockdown (Fisher et al. 2023 modERN RNA-seq)
+#  Motif2 hits from FIMO scan (fimo_joint/fimo.tsv, q<=0.05); peak-gene assignment by strand-aware nearest TSS (dm6 ensGene), split proximal <=2kb vs distal >2kb
+#  Outcome: |log2FC| at 6-8h window. Inputs: Trh_Tgo_joint_filt (614 peaks), REFERENCE_LISTS/Fisher2023_per_gene_fold_changes.csv
+#  Result: null in all framings, including the distal set
+# ============================================================
+suppressMessages({
+  library(GenomicRanges); library(rtracklayer); library(ggplot2)
+  library(TxDb.Dmelanogaster.UCSC.dm6.ensGene); library(org.Dm.eg.db)
+})
+stopifnot(exists("Trh_Tgo_joint_filt"), length(Trh_Tgo_joint_filt) == 614L)
+txdb <- TxDb.Dmelanogaster.UCSC.dm6.ensGene
+
+##, 1. Motif2 flag per peak (canonical peak_N -> coordinate mapping) --------
+# FIMO joint-peak scan produced by the Chapter 3 analysis (data/chapter3).
+P_FIMO_JOINT <- file.path(PROJECT_DIR, "data", "chapter3",
+                          "fimo_joint", "fimo.tsv")
+stopifnot(file.exists(P_FIMO_JOINT))
+fimo <- read.delim(P_FIMO_JOINT, comment.char = "#", stringsAsFactors = FALSE)
+fimo <- fimo[fimo$motif_id == "STRCACTGARARAAA" &
+             !is.na(fimo$q.value) & fimo$q.value <= 0.05, ]
+pidx <- as.integer(sub("peak_", "", fimo$sequence_name))
+stopifnot(all(pidx >= 1L & pidx <= length(Trh_Tgo_joint_filt)))
+# peak-local start/stop (1-based within-peak) -> genomic coordinate
+fimo_gr <- GRanges(
+  seqnames = as.character(seqnames(Trh_Tgo_joint_filt))[pidx],
+  ranges   = IRanges(start(Trh_Tgo_joint_filt)[pidx] + fimo$start - 1L,
+                     start(Trh_Tgo_joint_filt)[pidx] + fimo$stop  - 1L)
+)
+has_motif2 <- countOverlaps(Trh_Tgo_joint_filt, fimo_gr, ignore.strand = TRUE) > 0
+mcols(Trh_Tgo_joint_filt)$has_motif2 <- has_motif2
+n_peaks_m2 <- sum(has_motif2)
+cat(sprintf("Motif2 (q<=0.05) present at %d / %d peaks (%.1f%%)\n",
+            n_peaks_m2, length(has_motif2), 100 * mean(has_motif2)))
+
+##, 2. Strand-aware nearest-TSS (dm6 ensGene), coordinate-based --------------
+g   <- suppressMessages(as.data.frame(genes(txdb)))
+g   <- g[as.character(g$seqnames) %in% good_chr, ]
+tss <- ifelse(g$strand == "+", g$start, g$end)
+tss_gr <- GRanges(g$seqnames, IRanges(tss, tss),
+                  strand = g$strand, gene_id = g$gene_id)
+nr <- distanceToNearest(Trh_Tgo_joint_filt, tss_gr, ignore.strand = TRUE)
+pk <- data.frame(
+  gene_id    = tss_gr$gene_id[subjectHits(nr)],
+  dist       = mcols(nr)$distance,
+  signal     = Trh_Tgo_joint_filt$signalValue[queryHits(nr)],
+  has_motif2 = mcols(Trh_Tgo_joint_filt)$has_motif2[queryHits(nr)],
+  stringsAsFactors = FALSE
+)
+
+##, 3. Fisher per-gene fold change, symbol -> FBgn (Chapter 5 recipe) --------
+P_FISHER_PG <- file.path(REFERENCE_LISTS, "Fisher2023_per_gene_fold_changes.csv")
+stopifnot(file.exists(P_FISHER_PG))
+fr <- read.delim(P_FISHER_PG, header = TRUE, sep = "\t", dec = ",",
+                 na.strings = c("", "NA", "NaN"),
+                 stringsAsFactors = FALSE, strip.white = TRUE)
+names(fr) <- trimws(names(fr))
+names(fr)[names(fr) == "gene_id"] <- "symbol_fisher"
+fr$symbol_fisher <- trimws(fr$symbol_fisher)
+## Same symbol -> FBgn mapping as the direct-target table (map_fisher_symbols()).
+mp <- map_fisher_symbols(fr$symbol_fisher)
+mp <- mp[!is.na(mp$FLYBASE), c("SYMBOL", "FLYBASE")]
+fr$gene_id <- mp$FLYBASE[match(fr$symbol_fisher, mp$SYMBOL)]
+fr <- fr[!is.na(fr$gene_id), ]
+fr$min_padj <- pmin(fr$padj_6.8, fr$padj_16.18, na.rm = TRUE)
+fr <- fr[order(fr$gene_id, fr$min_padj), ]
+fr <- fr[!duplicated(fr$gene_id), ]
+
+##, 4. Per-gene stratum table and the tests ---------------------------------
+# Collapse peaks to genes within a distance band: a gene is Motif2-positive
+# if any assigned peak carries Motif2; strongest peak signal is retained.
+build_stratum <- function(dist_lo, dist_hi, label) {
+  s  <- pk[pk$dist >= dist_lo & pk$dist <= dist_hi, ]
+  gm <- tapply(s$has_motif2, s$gene_id, any)
+  gs <- tapply(s$signal,     s$gene_id, max)
+  d  <- data.frame(gene_id     = names(gm),
+                   has_motif2  = as.logical(gm),
+                   peak_signal = as.numeric(gs[names(gm)]),
+                   stringsAsFactors = FALSE)
+  d  <- merge(d, fr[, c("gene_id", "log2FC_6.8", "log2FC_16.18")],
+              by = "gene_id", all.x = TRUE)
+  d  <- d[!is.na(d$log2FC_6.8), ]
+  d$abs68   <- abs(d$log2FC_6.8)
+  d$abs1618 <- abs(d$log2FC_16.18)
+  d$stratum <- label
+  d
+}
+d_prox <- build_stratum(0L,    2000L, "Proximal (\u2264 2 kb)")
+d_dist <- build_stratum(2001L, Inf,   "Distal (> 2 kb)")
+d_all  <- build_stratum(0L,    Inf,   "All peaks")
+
+test2_wilcox <- function(d, col = "abs68") {
+  w <- suppressWarnings(wilcox.test(d[[col]] ~ d$has_motif2))
+  list(p = unname(w$p.value),
+       med_pos = median(d[[col]][d$has_motif2]),
+       med_neg = median(d[[col]][!d$has_motif2]),
+       n_pos = sum(d$has_motif2), n_neg = sum(!d$has_motif2))
+}
+r_prox <- test2_wilcox(d_prox)
+r_dist <- test2_wilcox(d_dist)
+r_all  <- test2_wilcox(d_all)
+
+# Robustness: signal-controlled regression on the pooled set (proximal +
+# distal). Does Motif2 add predictive power for |log2FC| once peak signal
+# strength is accounted for?
+d_reg <- d_all
+d_reg$log_signal <- log10(d_reg$peak_signal)
+fit_full <- lm(abs68 ~ log_signal + has_motif2, data = d_reg)
+fit_red  <- lm(abs68 ~ log_signal,              data = d_reg)
+lm_p <- anova(fit_red, fit_full)$`Pr(>F)`[2]
+lm_beta <- summary(fit_full)$coefficients["has_motif2TRUE", "Estimate"]
+
+cat("\n== TEST 2: Motif2 vs trh-RNAi |log2FC| (6-8 h) ==\n")
+cat(sprintf("  Proximal:  n+=%d n-=%d  med+=%.3f med-=%.3f  Wilcoxon p=%.3f\n",
+            r_prox$n_pos, r_prox$n_neg, r_prox$med_pos, r_prox$med_neg, r_prox$p))
+cat(sprintf("  Distal:    n+=%d n-=%d  med+=%.3f med-=%.3f  Wilcoxon p=%.3f\n",
+            r_dist$n_pos, r_dist$n_neg, r_dist$med_pos, r_dist$med_neg, r_dist$p))
+cat(sprintf("  All peaks: n+=%d n-=%d  med+=%.3f med-=%.3f  Wilcoxon p=%.3f\n",
+            r_all$n_pos, r_all$n_neg, r_all$med_pos, r_all$med_neg, r_all$p))
+cat(sprintf("  Signal-controlled lm: motif2 beta=%.4f  partial-F p=%.3f\n",
+            lm_beta, lm_p))
+
+##, 5. Figure: proximal/distal boxplots, |log2FC| by Motif2 status ----------
+D <- rbind(d_prox, d_dist)
+D$grp     <- factor(ifelse(D$has_motif2, "Motif2-positive", "Motif2-negative"),
+                    levels = c("Motif2-negative", "Motif2-positive"))
+D$stratum <- factor(D$stratum, levels = c("Proximal (\u2264 2 kb)", "Distal (> 2 kb)"))
+pv <- c("Proximal (\u2264 2 kb)" = r_prox$p, "Distal (> 2 kb)" = r_dist$p)
+ytop <- as.numeric(quantile(D$abs68, 0.99))
+lab_df <- data.frame(stratum = factor(names(pv), levels = levels(D$stratum)),
+                     lab = sprintf("Wilcoxon~italic(p)==%.2f", pv))
+ns <- aggregate(abs68 ~ stratum + grp, D, length); names(ns)[3] <- "n"
+
+p <- ggplot(D, aes(grp, abs68, fill = grp)) +
+  geom_boxplot(width = 0.6, outlier.size = 0.6, alpha = 0.9) +
+  facet_wrap(~ stratum) +
+  geom_text(data = ns, aes(x = grp, label = paste0("n=", n), y = -0.03),
+            inherit.aes = FALSE, size = 3, colour = PAL_INK[["annotation"]]) +
+  geom_text(data = lab_df, aes(x = 1.5, y = ytop * 1.08, label = lab),
+            inherit.aes = FALSE, size = 3.4, parse = TRUE) +
+  scale_fill_manual(values = pal_binary("Motif2-positive", "Motif2-negative"),
+                    guide = "none") +
+  labs(x = NULL,
+       y = expression(group("|", log[2]~"fold change", "|")~"  ("*italic("trh")*"-RNAi, 6-8 h)")) +
+  coord_cartesian(ylim = c(-0.06, ytop * 1.15)) +
+  theme_bw(base_size = 12) +
+  theme(strip.background = element_rect(fill = PAL_INK[["band"]]),
+        panel.grid.minor = element_blank())
+
+## Figure height is 4.25 in, giving a slightly larger label size at \linewidth
+## than a taller figure would.
+ggsave(file.path(FIGURES_DIR, "fig5_7_motif2_perturbation.png"),
+       plot = p, width = 8, height = 4.25, dpi = 300, bg = "white")
+cat("Wrote fig5_7_motif2_perturbation.png\n")
+
+##, 6. Convenience scalars for the export chunk -----------------------------
+# Consumed by ch5-export-computed-values (see the TEST 2 block added to ch5_vals).
+test2_n_peaks_motif2  <- n_peaks_m2
+test2_prox_p          <- r_prox$p
+test2_prox_med_pos    <- r_prox$med_pos
+test2_prox_med_neg    <- r_prox$med_neg
+test2_prox_n_pos      <- r_prox$n_pos
+test2_prox_n_neg      <- r_prox$n_neg
+test2_dist_p          <- r_dist$p
+test2_dist_med_pos    <- r_dist$med_pos
+test2_dist_med_neg    <- r_dist$med_neg
+test2_dist_n_pos      <- r_dist$n_pos
+test2_dist_n_neg      <- r_dist$n_neg
+test2_all_p           <- r_all$p
+test2_lm_p            <- lm_p
+```
+---
+```{r ch5-test2-power-and-cme-control, include=TRUE, eval=TRUE}
+# ============================================================
+#  TEST 2 ADDENDUM: MINIMUM DETECTABLE EFFECT AND CME POSITIVE CONTROL
+#  (a) MDE via Noether normal approximation for Wilcoxon-Mann-Whitney,
+#      AUC scale, two-sided alpha 0.05, power 0.80.
+#  (b) E-box (ACGTG, either strand) substituted for Motif2 as predictor
+#      of |log2FC|, same pipeline.
+# ============================================================
+suppressPackageStartupMessages({
+  library(BSgenome.Dmelanogaster.UCSC.dm6); library(Biostrings)
+})
+stopifnot(exists("Trh_Tgo_joint_filt"), length(Trh_Tgo_joint_filt) == 614L,
+          exists("pk"), exists("fr"))
+
+##, 1. CME flag per peak: ACGTG on either strand (Chapter 3 definition) -----
+.seqs   <- getSeq(BSgenome.Dmelanogaster.UCSC.dm6, Trh_Tgo_joint_filt)
+has_cme <- vcountPattern("ACGTG", .seqs) > 0 |
+           vcountPattern("CACGT", .seqs) > 0        # revcomp of ACGTG
+# Check: must reproduce the Chapter 3 CME-positive count exactly.
+stopifnot(sum(has_cme) == 186L)
+pk$has_cme <- has_cme[queryHits(distanceToNearest(
+  Trh_Tgo_joint_filt,
+  { .g <- suppressMessages(as.data.frame(genes(txdb)))
+    .g <- .g[as.character(.g$seqnames) %in% good_chr, ]
+    GRanges(.g$seqnames,
+            IRanges(ifelse(.g$strand == "+", .g$start, .g$end),
+                    ifelse(.g$strand == "+", .g$start, .g$end)),
+            strand = .g$strand) },
+  ignore.strand = TRUE))]
+
+##, 2. Generalised stratum builder (flag column by name) --------------------
+build_flag <- function(dist_lo, dist_hi, flagcol) {
+  s  <- pk[pk$dist >= dist_lo & pk$dist <= dist_hi, ]
+  gm <- tapply(s[[flagcol]], s$gene_id, any)
+  gs <- tapply(s$signal,     s$gene_id, max)
+  d  <- data.frame(gene_id = names(gm), flag = as.logical(gm),
+                   peak_signal = as.numeric(gs[names(gm)]),
+                   stringsAsFactors = FALSE)
+  d  <- merge(d, fr[, c("gene_id", "log2FC_6.8")], by = "gene_id", all.x = TRUE)
+  d  <- d[!is.na(d$log2FC_6.8), ]
+  d$abs68 <- abs(d$log2FC_6.8)
+  d
+}
+
+##, 3. MDE (Noether) and observed AUC ---------------------------------------
+mde_auc <- function(n1, n2, alpha = 0.05, power = 0.80)
+  0.5 + (qnorm(1 - alpha/2) + qnorm(power)) / sqrt(12 * n1 * n2 / (n1 + n2))
+auc_obs <- function(x, y) {
+  r <- rank(c(x, y))
+  (sum(r[seq_along(x)]) - length(x) * (length(x) + 1) / 2) / (length(x) * length(y))
+}
+summarise_flag <- function(d) {
+  x <- d$abs68[d$flag]; y <- d$abs68[!d$flag]
+  w <- suppressWarnings(wilcox.test(x, y))
+  list(n_pos = length(x), n_neg = length(y),
+       med_pos = median(x), med_neg = median(y), p = unname(w$p.value),
+       auc = auc_obs(x, y), mde = mde_auc(length(x), length(y)))
+}
+
+t2_m2_prox <- summarise_flag(build_flag(0L,    2000L, "has_motif2"))
+t2_m2_dist <- summarise_flag(build_flag(2001L, Inf,   "has_motif2"))
+t2_m2_all  <- summarise_flag(build_flag(0L,    Inf,   "has_motif2"))
+t2_cme_prox <- summarise_flag(build_flag(0L,    2000L, "has_cme"))
+t2_cme_dist <- summarise_flag(build_flag(2001L, Inf,   "has_cme"))
+t2_cme_all  <- summarise_flag(build_flag(0L,    Inf,   "has_cme"))
+
+# Check: Motif2 group sizes must reproduce the values already in the chapter.
+stopifnot(t2_m2_prox$n_pos == 85L, t2_m2_prox$n_neg == 340L,
+          t2_m2_dist$n_pos == 71L, t2_m2_dist$n_neg == 53L)
+
+cat("\n== TEST 2 ADDENDUM: MDE and CME positive control ==\n")
+for (nm in c("t2_m2_prox","t2_m2_dist","t2_m2_all",
+             "t2_cme_prox","t2_cme_dist","t2_cme_all")) {
+  r <- get(nm)
+  cat(sprintf("  %-12s n+=%3d n-=%3d  p=%.3f  AUC=%.3f  MDE(80%%)=%.3f\n",
+              nm, r$n_pos, r$n_neg, r$p, r$auc, r$mde))
+}
+```
+
+
+```{r}
+# ============================================================
+# Appendix figures for Chapter 5 microarray QC
+# ------------------------------------------------------------
+# Two 3+2 tiles  (Limma_fdr, stdev_vs_mean), single-panel inputs only.
+# Ten individual stage PNGs (SampleBoxplot, MAplotsp1), copy through unchanged.
+# ============================================================
+
+# Directory holding the FlyChip microarray QC images R{11-15}.vsn.*.png.
+#
+# These files are inputs to the tiles and copies composed from them, so they
+# are kept with the other Chapter 5 inputs rather than in FIGURES_DIR.
+MARRAY_QC_PNG_DIR <- file.path(PROJECT_DIR, "data", "chapter5",
+                                   "microarray_qc_images")
+if (!dir.exists(MARRAY_QC_PNG_DIR))
+  stop("missing microarray QC image directory ", MARRAY_QC_PNG_DIR,
+       " -- the 20 R{11-15}.vsn.{Limma.fdr,stdev_vs_mean,",
+       "Sample-Boxplot,MAplots-p1}.png files are there")
+.need <- file.path(MARRAY_QC_PNG_DIR,
+                   sprintf("R%d.vsn.%s.png", rep(11:15, 4),
+                           rep(c("Limma.fdr", "stdev_vs_mean",
+                                 "Sample-Boxplot", "MAplots-p1"), each = 5)))
+if (any(!file.exists(.need)))
+  stop("missing microarray QC image(s):\n  ",
+       paste(basename(.need[!file.exists(.need)]), collapse = "\n  "))
+
+# ---- Helper: 3+2 tile (only safe for single-panel input PNGs) ----
+make_tile_3_2 <- function(panel_paths, out_path) {
+  stopifnot(length(panel_paths) == 5)
+  missing <- panel_paths[!file.exists(panel_paths)]
+  if (length(missing) > 0L) {
+    stop("Missing source PNG(s):\n  ", paste(missing, collapse = "\n  "))
+  }
+  if (!requireNamespace("magick", quietly = TRUE)) {
+    stop("Install the 'magick' R package: install.packages('magick')")
+  }
+  imgs   <- magick::image_read(panel_paths)
+  w      <- magick::image_info(imgs[1])$width
+  h      <- magick::image_info(imgs[1])$height
+  filler <- magick::image_blank(w, h, color = "white")
+  top    <- magick::image_append(imgs[1:3])
+  bottom <- magick::image_append(c(imgs[4:5], filler))
+  magick::image_write(magick::image_append(c(top, bottom), stack = TRUE),
+                      path = out_path, format = "png")
+  invisible(out_path)
+}
+
+# ---- (1) Two tiles ----
+tile_specs <- list(
+  list(stem = "Limma.fdr",     out = "figH_1_volcano_st11to15.png"),
+  list(stem = "stdev_vs_mean", out = "figH_2_meanvar_st11to15.png")
+)
+
+for (spec in tile_specs) {
+  src <- file.path(MARRAY_QC_PNG_DIR,
+                   sprintf("R%d.vsn.%s.png", 11:15, spec$stem))
+  out <- file.path(FIGURES_DIR, spec$out)
+  make_tile_3_2(src, out)
+  message("Wrote tile: ", out)
+}
+
+# ---- (2) Individual per-stage figures (no resampling, just copy) ----
+## The appendix figure index and the stage are derived together here:
+## boxplots are H.8-H.12 for stages 11-15, MA-plots H.3-H.7.
+individual_specs <- list(
+  list(stem = "Sample-Boxplot", off = -3L, out_fmt = "figH_%d_boxplot_norm_st%d.png"),
+  list(stem = "MAplots-p1",     off = -8L, out_fmt = "figH_%d_maplot_st%d.png")
+)
+
+for (spec in individual_specs) {
+  for (s in 11:15) {
+    src <- file.path(MARRAY_QC_PNG_DIR,
+                     sprintf("R%d.vsn.%s.png", s, spec$stem))
+    out <- file.path(FIGURES_DIR, sprintf(spec$out_fmt, s + spec$off, s))
+    stopifnot(file.exists(src))
+    file.copy(src, out, overwrite = TRUE)
+    message("Copied: ", out)
+  }
+}
+
+old_tile <- file.path(FIGURES_DIR, "fig5_app_lm_diag.png")
+if (file.exists(old_tile)) file.remove(old_tile)
+```
+
+```{r ch5-fig-app-lm-diag, eval=FALSE}
+# ============================================================
+#  Per-stage lm diagnostics (plot.lm) for lm(microarray ~ RTqPCR), all 16 validation genes, stages 11-15; outputs figJ_1_lm_diag_st11..st15.png; standalone, loads project paths; data as Figure 5.5 (R{st}.vsn.limma.fdr.txt.gz by TargetID, st{st}_validation_unstacked.csv)
+# ============================================================
+if (!exists("FIGURES_DIR"))
+CH5_INPUT_DIR <- CH5_DIR          # data/chapter5 (limma + RT-qPCR)
+LIMMA_DIR     <- CH5_INPUT_DIR
+stopifnot(dir.exists(CH5_INPUT_DIR), dir.exists(FIGURES_DIR))
+
+stage_ids <- 11:15
+
+# 16 validation genes, identified by microarray probe (TargetID), single
+# source of truth linking RT-qPCR gene names to limma probe rows.
+probe_map <- c(
+  "BicC"     = "CG4824-RA",  "PGRP-SB1" = "CG9681-RA",  "Cyp6a19" = "CG10243-RA",
+  "dhd"      = "CG4193-RA",  "AsnS"     = "CG33486-RA", "Ect3"    = "CG3132-RA",
+  "Phk-3"    = "CG9358-RA",  "Cpr51A"   = "CG10112-RA", "trh"     = "CG6883-RA",
+  "Cyp12a4"  = "CG6042-RA",  "Cyp309a2" = "CG18559-RA", "ninaD"   = "CG31783-RA",
+  "CG14102"  = "CG14102-RA", "Cdc42"    = "CG12530-RB", "Sli"     = "CG8355-RC",
+  "Ir7b"     = "CG15326-RA"
+)
+
+read_marray_stage <- function(st) {
+  f <- file.path(LIMMA_DIR, sprintf("R%d.vsn.limma.fdr.txt.gz", st))
+  stopifnot(file.exists(f))
+  lim <- read.delim(f, skip = 1, check.names = FALSE, stringsAsFactors = FALSE)
+  stopifnot(all(c("TargetID", "logFC", "t") %in% names(lim)))
+  idx <- match(probe_map, lim$TargetID)
+  stopifnot(!any(is.na(idx)))
+  data.frame(gene = names(probe_map),
+             microarray = as.numeric(lim$logFC[idx]),
+             row.names = NULL, stringsAsFactors = FALSE)
+}
+
+read_rtqpcr_stage <- function(st) {
+  f <- file.path(CH5_INPUT_DIR, sprintf("st%d_validation_unstacked.csv", st))
+  stopifnot(file.exists(f))
+  d <- read.csv(f, row.names = 1, check.names = FALSE, fileEncoding = "UTF-8-BOM")
+  names(d)[names(d) %in% c("RT-qPCR", "RT.qPCR")] <- "RTqPCR"
+  data.frame(gene = rownames(d), RTqPCR = as.numeric(d$RTqPCR),
+             row.names = NULL, stringsAsFactors = FALSE)
+}
+
+for (st in stage_ids) {
+  d <- merge(read_marray_stage(st), read_rtqpcr_stage(st), by = "gene")
+  stopifnot(nrow(d) == 16L)                      # all 16 genes, no exclusions
+  fit <- lm(microarray ~ RTqPCR, data = d)
+
+  # NAMING: figures are written as "figJ_{1..5}_lm_diag_st{11..15}.png".
+  # The panel index and the stage are both derived together here, so the
+  # numbering in the filename stays consistent with the stage being plotted.
+  out <- file.path(FIGURES_DIR,
+                   sprintf("figJ_%d_lm_diag_st%d.png", st - 10L, st))
+  png(out, width = 8, height = 8, units = "in", res = 300)
+  op <- par(mfrow = c(2, 2), mar = c(4.2, 4.2, 2.6, 1.2), oma = c(0, 0, 2.2, 0))
+  # Panels 1,2,3,5 = residual-fitted, normal Q-Q, scale-location, residual-leverage
+  # (not which=1:4, which would give Cook's distance instead of residual-leverage).
+  plot(fit, which = c(1L, 2L, 3L, 5L), sub.caption = "")  # suppress default formula caption
+  mtext(sprintf("Stage %d  (n = %d, all 16 validation genes)", st, nrow(d)),
+        outer = TRUE, cex = 1.0, font = 2)
+  par(op)
+  dev.off()
+  cat(sprintf("Wrote %s\n", out))
+}
+```
+
+```{r ch5-export-computed-values, eval=FALSE}
+# ============================================================
+# CHAPTER 5, record the reported values in results/reported_values.tsv
+#
+# Run this as the last chunk, after every compute chunk. All objects below
+# (m13/m14, stat13/stat14, valid_st13/valid_st14, trh_expression, rtqpcr_stats,
+#  ft_2way, direct_targets_trh, n_retained_tissue, ...) must exist in session.
+# ============================================================
+
+stopifnot(exists("save_values"), length(Trh_Tgo_joint_filt) == 614L)
+
+ch5_vals <- list(
+
+  # ---- Genome-wide microarray vs Fisher concordance (was CONCORDANCE BLOCK) ----
+  nMergedStThirteen              = nrow(m13),
+  nMergedStFourteen              = nrow(m14),
+  nMergedFisherMapped            = n_fisher_mapped,
+  nMergedFisherTotal             = n_fisher_total,
+  rhoGwStThirteenFisher          = sprintf("%.2f", stat13$mid$rho),
+  rhoGwStFourteenFisher          = sprintf("%.2f", stat14$mid$rho),
+  rhoGwStThirteenFisherEarly     = sprintf("%.2f", stat13$early$rho),
+  rhoGwStFourteenFisherEarly     = sprintf("%.2f", stat14$early$rho),
+  rhoGwStThirteenFisherLate      = sprintf("%.2f", stat13$late$rho),
+  rhoGwStFourteenFisherLate      = sprintf("%.2f", stat14$late$rho),
+  signConcordGwStThirteen        = sprintf("%.0f", 100 * stat13$mid$sign_concord),
+  signConcordGwStFourteen        = sprintf("%.0f", 100 * stat14$mid$sign_concord),
+  nValidatedStThirteen           = length(valid_st13),
+  nValidatedStFourteen           = length(valid_st14),
+  nValidatedUnion                = length(union(valid_st13, valid_st14)),
+  nValidatedIntersection         = length(intersect(valid_st13, valid_st14)),
+  signConcordValidatedStThirteen = sprintf("%.0f", 100 * sign_c_valid_st13),
+  signConcordValidatedStFourteen = sprintf("%.0f", 100 * sign_c_valid_st14),
+
+  # ---- Direct targets, RT-qPCR, Rib comparison (was strip-append block) ----
+  nFisherDegs                    = length(fisher_degs),
+  nMarrayValidated               = marray_validated_total,
+  nMarrayInFisher                = marray_in_fisher_total,
+  pctMarrayInFisher              = round(100 * marray_in_fisher_total / marray_validated_total, 1),
+  marrayDataSource               = marray_source,
+  ##, trh knock-down efficacy, RT-qPCR (the efficacy measurement) -----------
+  trhQpcrStEleven       = sprintf("%.2f", trh_qpcr$log2FC[1]),
+  trhQpcrStTwelve       = sprintf("%.2f", trh_qpcr$log2FC[2]),
+  trhQpcrStThirteen     = sprintf("%.2f", trh_qpcr$log2FC[3]),
+  trhQpcrStFourteen     = sprintf("%.2f", trh_qpcr$log2FC[4]),
+  trhQpcrStFifteen      = sprintf("%.2f", trh_qpcr$log2FC[5]),
+  trhQpcrFoldStFifteen  = sprintf("%.1f", 1 / 2^trh_qpcr$log2FC[5]),
+  trhQpcrFoldStFourteen = sprintf("%.1f", 1 / 2^trh_qpcr$log2FC[4]),
+  # Stage-agnostic: the deepest depletion and the stage at which it occurs are
+  # derived from the data, never asserted, so trhQpcrFoldStFifteen is not used
+  # to state "the deepest" anywhere.
+  trhQpcrFoldMax        = sprintf("%.2f", 1 / 2^min(trh_qpcr$log2FC)),
+  trhQpcrStageMax       = sprintf("%d",   trh_qpcr$stage[which.min(trh_qpcr$log2FC)]),
+  trhQpcrRho            = sprintf("%.2f", unname(ct_stage$estimate)),
+  trhQpcrRhoP           = sprintf("%.3f", ct_stage$p.value),
+  # Per-stage inference is possible because the raw Ct workbook carries three
+  # independent preparations per arm per stage.
+  trhQpcrPStThirteen    = sprintf("%.3f", trh_qpcr$p_welch[3]),
+  trhQpcrPMinOther      = sprintf("%.2f", min(trh_qpcr$p_welch[-3])),
+  trhQpcrPermStThirteen = sprintf("%.2f", trh_qpcr$p_perm[3]),
+  trhQpcrPermFloor      = sprintf("%.2f", 2 / choose(6, 3)),
+  trhQpcrSeMin          = sprintf("%.2f", min(trh_qpcr$SE)),
+  trhQpcrSeMax          = sprintf("%.2f", max(trh_qpcr$SE)),
+  ##, trh on the array (secondary trace; not the efficacy claim) ------------
+  trhArrayStEleven      = sprintf("%+.2f", trh_array$log2FC[1]),
+  trhArrayStTwelve      = sprintf("%+.2f", trh_array$log2FC[2]),
+  trhArrayStThirteen    = sprintf("%+.2f", trh_array$log2FC[3]),
+  trhArrayStFourteen    = sprintf("%+.2f", trh_array$log2FC[4]),
+  trhArrayStFifteen     = sprintf("%+.2f", trh_array$log2FC[5]),
+  trhArraySEStEleven    = sprintf("%.2f", trh_array$SE[1]),
+  trhArraySEStTwelve    = sprintf("%.2f", trh_array$SE[2]),
+  trhArraySEStThirteen  = sprintf("%.2f", trh_array$SE[3]),
+  trhArraySEStFourteen  = sprintf("%.2f", trh_array$SE[4]),
+  trhArraySEStFifteen   = sprintf("%.2f", trh_array$SE[5]),
+  trhArrayPadjMin       = sprintf("%.2f", min(trh_array$padj)),
+  trhArrayNPositive     = sum(trh_array$log2FC > 0),
+  ##, Fisher's own trh knock-down, for scale against the array's floor ------
+  # fr is built in the TEST 2 chunk, which runs before this export chunk.
+  fisherTrhLogFC        = sprintf("%.2f", fr$log2FC_6.8[match("trh", fr$symbol_fisher)]),
+  ##, the array's single-probe detection floor (bounded negative) -----------
+  trhArrayMdeFold       = format(round(mde_fold), scientific = FALSE, big.mark = ""),
+  trhArrayMdeLogTwo     = sprintf("%.1f", mde_log2),
+  trhArrayMdeTCrit      = sprintf("%.0f", t_crit),
+  trhArrayMdeNArrays    = 3L,
+  ##, gene-level pass counts -----------------------------------------------
+  nMarrayPassStEleven   = n_pass_fold[1],
+  nMarrayPassStTwelve   = n_pass_fold[2],
+  nMarrayPassStThirteen = n_pass_fold[3],
+  nMarrayPassStFourteen = n_pass_fold[4],
+  nMarrayPassStFifteen  = n_pass_fold[5],
+  # Rank correlation between depletion DEPTH (-log2FC, so positive = depleted)
+  # and per-stage DE gene count. Derived here so the value cannot drift from
+  # the underlying data.
+  marrayCountDepletionRho = sprintf("%+.2f", unname(suppressWarnings(
+      cor.test(-trh_qpcr$log2FC, n_pass_fold, method = "spearman"))$estimate)),
+  marrayCountDepletionP   = sprintf("%.2f", suppressWarnings(
+      cor.test(-trh_qpcr$log2FC, n_pass_fold, method = "spearman"))$p.value),
+  ##, padj-only counts -----------------------------------------------------
+  nMarrayPadjOnlyStFifteen = n_pass_padj[5],
+  ##, depletion vs cross-platform concordance (exact Spearman, n = 5) -------
+  trhDepletionConcRho   = sprintf("%.2f", unname(ct_conc$estimate)),
+  trhDepletionConcP     = sprintf("%.3f", ct_conc$p.value),
+  rtqpcrRsStEleven               = sprintf("%.2f", rtqpcr_stats$Rs[1]),
+  rtqpcrPStEleven                = sprintf("%.3f", rtqpcr_stats$p[1]),
+  rtqpcrRsStTwelve               = sprintf("%.2f", rtqpcr_stats$Rs[2]),
+  rtqpcrPStTwelve                = sprintf("%.3f", rtqpcr_stats$p[2]),
+  rtqpcrRsStThirteen             = sprintf("%.2f", rtqpcr_stats$Rs[3]),
+  rtqpcrPStThirteen              = sprintf("%.3f", rtqpcr_stats$p[3]),
+  rtqpcrRsStFourteen             = sprintf("%.2f", rtqpcr_stats$Rs[4]),
+  rtqpcrPStFourteen              = sprintf("%.3f", rtqpcr_stats$p[4]),
+  rtqpcrRsStFifteen              = sprintf("%.2f", rtqpcr_stats$Rs[5]),
+  rtqpcrPStFifteen               = sprintf("%.3f", rtqpcr_stats$p[5]),
+  nRibTargets                    = length(rib_target_genes),
+  nTrhChipPeaksAnnot             = nrow(peak_genes_in_window),
+  nTrhChipGenes                  = length(trh_chip_genes),
+  nDirectTargetsTrh              = length(direct_targets_trh),
+  directTargetsTrhFold           = sprintf("%.2f", fold_enrich_trh),
+  directTargetsTrhP              = fmt_p(p_hyper_trh),
+  # Universe-restricted test (the valid one: draw is a subset of the urn)
+  nChipGenesInUniv               = u_n,
+  nChipGenesOutUniv              = length(trh_chip_genes) - u_n,
+  nFisherDegsInUniv              = u_K,
+  nDirectTargetsInUniv           = u_k,
+  dtUnivExpected                 = sprintf("%.1f", u_exp),
+  dtUnivFold                     = sprintf("%.2f", u_fold),
+  dtUnivP                        = sprintf("%.3f", u_pdep),
+  dtUnivOR                       = sprintf("%.2f", u_ft$estimate),
+  dtUnivCIlo                     = sprintf("%.2f", u_ft$conf.int[1]),
+  dtUnivCIhi                     = sprintf("%.2f", u_ft$conf.int[2]),
+  dtUnivPowerTwoFold             = sprintf("%.2f", u_pow2),
+  nDirectTargetsFiltered         = ifelse(is.na(n_retained_tissue), "??", n_retained_tissue),
+  nDirectTargetsExcluded         = ifelse(is.na(n_excluded_tissue), "??", n_excluded_tissue),
+  nTrhRibOverlap                 = n_trh_rib_overlap,
+  trhRibOR                       = sprintf("%.2f", unname(ft_2way$estimate)),
+  trhRibP                        = fmt_p(ft_2way$p.value),
+  nThreeWayOverlap               = n_three_way,
+
+  # ---- Chung 2011 (GSE28780) second perturbation axis (ch5-chung2011-gse28780) ----
+  chungWTReps           = 3L,
+  chungNullReps         = 3L,
+  chungUniverse         = length(chung_universe),
+  chungTrhActivated     = length(intersect(chung_sets$down, chung_universe)),
+  chungTrhRepressed     = length(intersect(chung_sets$up,   chung_universe)),
+  chungTrhResponsive    = length(intersect(chung_sets$any,  chung_universe)),
+  chungBoundOnArray     = length(intersect(chung_bound, chung_universe)),
+  chungProxGenes        = length(intersect(chung_prox,  chung_universe)),
+  chungDistGenes        = length(intersect(chung_dist,  chung_universe)),
+  chungProxRespFold     = sprintf("%.2f", chung_get("prox","any","fold")),
+  chungProxRespP        = fmt_p(chung_get("prox","any","p")),
+  chungDistRespFold     = sprintf("%.2f", chung_get("dist","any","fold")),
+  chungDistRespP        = fmt_p(chung_get("dist","any","p")),
+  chungDistReprFold     = sprintf("%.2f", chung_get("dist","up","fold")),
+  chungDistReprP        = fmt_p(chung_get("dist","up","p")),
+  chungDistActFold      = sprintf("%.2f", chung_get("dist","down","fold")),
+  chungDistActP         = fmt_p(chung_get("dist","down","p")),
+  chungConjunction      = length(chung_conj_any),
+  chungConjunctionAct   = length(chung_conj_down),
+  chungDistFoldExprLo   = sprintf("%.2f", min(chung_robust$dist_fold)),
+  chungDistFoldExprHi   = sprintf("%.2f", max(chung_robust$dist_fold)),
+  chungDistPExprWorst   = fmt_p(max(chung_robust$dist_p)),
+
+  #, TEST 2: Motif2 functional-consequence test (fig5_7) --
+  nPeaksMotifTwo        = test2_n_peaks_motif2,
+  testTwoProxP          = sprintf("%.2f", test2_prox_p),
+  testTwoProxMedPos     = sprintf("%.3f", test2_prox_med_pos),
+  testTwoProxMedNeg     = sprintf("%.3f", test2_prox_med_neg),
+  testTwoProxNPos       = test2_prox_n_pos,
+  testTwoProxNNeg       = test2_prox_n_neg,
+  testTwoDistP          = sprintf("%.2f", test2_dist_p),
+  testTwoDistMedPos     = sprintf("%.3f", test2_dist_med_pos),
+  testTwoDistMedNeg     = sprintf("%.3f", test2_dist_med_neg),
+  testTwoDistNPos       = test2_dist_n_pos,
+  testTwoDistNNeg       = test2_dist_n_neg,
+  testTwoAllP           = sprintf("%.2f", test2_all_p),
+  testTwoLmP            = sprintf("%.2f", test2_lm_p),
+  testTwoMdeProx                 = sprintf("%.2f", t2_m2_prox$mde),
+  testTwoMdeDist                 = sprintf("%.2f", t2_m2_dist$mde),
+  testTwoMdeAll                  = sprintf("%.2f", t2_m2_all$mde),
+  testTwoAucProx                 = sprintf("%.2f", t2_m2_prox$auc),
+  testTwoAucDist                 = sprintf("%.2f", t2_m2_dist$auc),
+  testTwoAucAll                  = sprintf("%.2f", t2_m2_all$auc),
+
+  # ---- TEST 2 addendum: CME positive control ----
+  testTwoCmeProxNPos             = t2_cme_prox$n_pos,
+  testTwoCmeProxNNeg             = t2_cme_prox$n_neg,
+  testTwoCmeProxP                = sprintf("%.2f", t2_cme_prox$p),
+  testTwoCmeDistNPos             = t2_cme_dist$n_pos,
+  testTwoCmeDistNNeg             = t2_cme_dist$n_neg,
+  testTwoCmeDistP                = sprintf("%.2f", t2_cme_dist$p),
+  testTwoCmeAllNPos              = t2_cme_all$n_pos,
+  testTwoCmeAllNNeg              = t2_cme_all$n_neg,
+  testTwoCmeAllP                 = sprintf("%.2f", t2_cme_all$p),
+  testTwoCmeAucAll               = sprintf("%.2f", t2_cme_all$auc),
+  nConjConcordant                = n_conj_concordant,
+  nConjDiscordant                = n_conj_discordant,
+  nConjProximal                  = n_conj_proximal,
+  nConjDistal                    = n_conj_distal,
+  nConjDistalNovel               = n_conj_distal_novel
+)
+
+save_values("ch5", ch5_vals)
+```

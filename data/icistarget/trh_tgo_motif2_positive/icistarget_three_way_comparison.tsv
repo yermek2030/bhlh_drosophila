@@ -1,0 +1,11 @@
+quantity	all_614	m2_pos_178	m2_neg_436	verdict
+input regions	614	178	436	--
+Grh best NES	3.32	5.77	1.44	Motif2-specific; pooled value intermediate
+Grh significant matrices	1	16	0	corrected: wide Grh synonyms
+Trl best NES	5.5	5.57	4.09	both sets: joint-peak feature
+Opa best NES	2.46	1.17	3.55	negative set only
+Zld best NES	0.9	0.31	1.44	never enriched
+CLAMP best NES	0.32	0.99	0.11	never enriched
+fantom motif80 NES	1.74	3.11	0.59	tracks Motif2
+TOMTOM hits q<=0.05	0	1	0	positive set only
+9 bp core hits q<=0.05	0	0	NA	core uncatalogued

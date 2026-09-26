@@ -1,0 +1,7 @@
+db_index	motif_id	motif_alt_id	consensus	E-value	adj_p-value	log_adj_p-value	bin_location	bin_width	total_width	sites_in_bin	total_sites	p_success	p-value	mult_tests
+   1	STRCACTGARARAAA	TRH_TGO_MOTIF2	STRCACTGARARAAA	2.2e-14	   1.1e-14	         -32.13	        75.5	     49.0	        486	          79	        256	  0.10082	9.4e-20	    117852
+   2	ACGTG	CME	ACGTG	2.0e0	   1.0e0	          -0.00	      -212.5	      3.0	        496	           8	        209	  0.00605	4.8e-5	    122757
+
+# CentriMo (Local Motif Enrichment Analysis): Version 5.5.9 compiled on May 27 2026 at 12:34:00
+# The format of this file is described at https://meme-suite.org/meme/doc/centrimo-output-format.html.
+# centrimo --verbosity 1 --oc data/motif2_robustness/centrimo_TRUEsummits --local data/motif2_robustness/trh_TRUEsummits_500bp.fa data/chapter3/STRCACTGARARAAA.meme data/motif2_robustness/cme.meme

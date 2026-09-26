@@ -1,0 +1,52 @@
+package	source	version_stated_in_text
+AnnotationDbi	Bioconductor	
+BSgenome.Dmelanogaster.UCSC.dm6	Bioconductor	1.4.1
+Biobase	Bioconductor	
+Biostrings	Bioconductor	
+ChIPpeakAnno	Bioconductor	
+ChIPseeker	Bioconductor	1.38.0
+DBI	CRAN	
+DiffBind	Bioconductor	
+GEOquery	Bioconductor	
+GenomeInfoDb	Bioconductor	
+GenomicFeatures	Bioconductor	
+GenomicRanges	Bioconductor	1.54.1
+IRanges	Bioconductor	
+Rsamtools	Bioconductor	
+S4Vectors	Bioconductor	
+TxDb.Dmelanogaster.UCSC.dm6.ensGene	Bioconductor	3.12.0
+VennDiagram	CRAN	
+car	CRAN	
+chipenrich	Bioconductor	2.26.0
+clusterProfiler	Bioconductor	
+colorspace	CRAN	
+cowplot	CRAN	
+data.table	CRAN	
+dplyr	CRAN	
+extrafont	CRAN	
+ggplot2	CRAN	
+ggplotify	CRAN	
+ggupset	CRAN	
+gridExtra	CRAN	
+hexbin	CRAN	
+knitr	CRAN	
+limma	Bioconductor	3.26.9
+lmtest	CRAN	
+magick	CRAN	
+matrixStats	CRAN	
+motifStack	Bioconductor	
+org.Dm.eg.db	Bioconductor	3.18.0
+patchwork	CRAN	
+png	CRAN	
+reactome.db	Bioconductor	
+readr	CRAN	
+readxl	CRAN	
+regioneR	Bioconductor	1.34.0
+rtracklayer	Bioconductor	
+sandwich	CRAN	
+scales	CRAN	
+seqinr	CRAN	
+stringr	CRAN	
+tibble	CRAN	
+tidyr	CRAN	
+universalmotif	Bioconductor	1.28.0

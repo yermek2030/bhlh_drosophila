@@ -1,0 +1,13 @@
+test	value
+peaks total	614
+Motif2+ peaks	178
+GAGA+ peaks	109
+T1 OR	2.739
+T1 p	4.603e-06
+T2 Motif2 instances	269
+T2 overlapping a GAGA hit	4
+T2 pct overlapping	1.5
+T3 GAGA- peaks	505
+T3 GAGA- peaks with Motif2	126
+T3 pct	25
+T3 pct of GAGA+ peaks with Motif2	47.7

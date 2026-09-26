@@ -1,0 +1,4 @@
+Context,Observed,Null_mean,Null_SD,Z_score,p_emp,N_perm
+All Trh/Tgo peaks (n=614),169,201.96,11.73,-2.81,0.00379924015196961,5000
+Promoter-proximal (≤1 kb),83,153.81,10.28,-6.89,0.0001999600079984,5000
+Distal (>1 kb),86,48.21,5.74,6.58,0.0001999600079984,5000

@@ -1,0 +1,5 @@
+"Heterodimer","N_peaks","TSGonly_pct","TSG_sd","CNSonly_pct","CNS_sd","rank_TSG","rank_CNS"
+"Trh/Tgo",614,2.64,0.28,4.16,0.78,2,2
+"Sim/Tgo",355,2.2,0.15,5.04,0.46,4,1
+"Dys/Tgo",870,2.29,0.29,2.68,0.72,3,4
+"Sima/Tgo",296,2.75,0,3.86,0,1,3

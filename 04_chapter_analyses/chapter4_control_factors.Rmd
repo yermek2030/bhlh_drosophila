@@ -1,0 +1,478 @@
+
+# Control transcription factors (Chapter 4)
+
+Four non-bHLH-PAS control factors are scanned for Motif2 under the same
+pipeline used for the four heterodimers in `chapter4_heterodimer_comparison.Rmd`:
+
+- TWI (Twist): bHLH without PAS, mesoderm (single-end)
+- VVL (Ventral veinless): POU-homeodomain, tracheal (paired-end)
+- RIB (Ribbon): BTB/POZ zinc finger, morphogenesis (paired-end)
+- DA (Daughterless): bHLH class I hub, the obligate partner of the class II
+  bHLH factors (single-end); peaks from `01_chipseq_processing/peak_calling_idr/production_peaks_da.sh`
+
+Run these chunks after `chapter4_heterodimer_comparison.Rmd`, in the same R
+session: the heterodimer peak sets (`Trh_Tgo_joint_filt`, `Sim_Tgo_joint_filt`,
+`Dys_Tgo_joint_filt`, `Sima_Tgo_joint_filt`, with their `$Motif2` and
+`$overlaps_enhancer` columns), the enhancer set `enhancers_filt`, `EXPORT_DIR`,
+`FIGURES_DIR` and `fmt_p` are taken from that session. The control
+Motif2 panel reported in the text is computed by
+`chapter4/ch4_ctrl_motif2_panel.R` from the FASTA and FIMO files written here.
+
+```{r ctrl-prereq-check, include=TRUE, eval=TRUE}
+# ---- Stop if any prerequisite is missing ----
+required_objs <- c(
+  # Heterodimer peak sets
+  "Trh_Tgo_joint_filt",
+  "Sim_Tgo_joint_filt",
+  "Dys_Tgo_joint_filt",
+  "Sima_Tgo_joint_filt",
+  # Reference enhancer set
+  "enhancers_filt",
+  # Paths and helpers
+  "PROJECT_DIR", "EXPORT_DIR", "FIGURES_DIR",
+  "fmt_p", "good_chr"
+)
+
+missing_objs <- setdiff(required_objs, ls(envir = .GlobalEnv))
+if (length(missing_objs) > 0L) {
+  stop("Missing prerequisites from main Chapter 4 environment: ",
+       paste(missing_objs, collapse = ", "),
+       "\nSource or knit the main Chapter 4 Rmd before running these chunks.")
+}
+# Before this file, run in the Chapter 4 Rmd:
+# {r annotate-distance-to-tss-all-heterodimers} ->
+# {r regulatory-classification} ->
+# {r cme-occurrence} ->
+# {r load-fimo-heterodimers}
+
+# Confirm the heterodimer peak sets carry the metadata columns we need
+for (nm in c("Trh_Tgo_joint_filt", "Sim_Tgo_joint_filt",
+             "Dys_Tgo_joint_filt", "Sima_Tgo_joint_filt")) {
+  gr <- get(nm)
+  stopifnot(inherits(gr, "GRanges"))
+  for (col in c("Motif2", "overlaps_enhancer")) {
+    if (!col %in% names(mcols(gr))) {
+      stop(sprintf(
+  "Object %s lacks metadata column $%s; run the main Chapter 4 motif/enhancer-overlap chunks first.",
+  nm,
+  col
+))
+    }
+  }
+}
+
+cat("All Chapter 4 prerequisites present.\n")
+cat(sprintf("  Trh_Tgo_joint_filt:  %d peaks\n", length(Trh_Tgo_joint_filt)))
+cat(sprintf("  Sim_Tgo_joint_filt:  %d peaks\n", length(Sim_Tgo_joint_filt)))
+cat(sprintf("  Dys_Tgo_joint_filt:  %d peaks\n", length(Dys_Tgo_joint_filt)))
+cat(sprintf("  Sima_Tgo_joint_filt: %d peaks\n", length(Sima_Tgo_joint_filt)))
+cat(sprintf("  enhancers_filt:      %d enhancers\n", length(enhancers_filt)))
+```
+
+---
+
+```{r ctrl-setup, include=TRUE, eval=TRUE}
+# ---- Paths for the controls extension ----
+## Repository root: the environment variable PROJECT_DIR, or the working directory.
+PROJECT_DIR <- normalizePath(Sys.getenv("PROJECT_DIR", unset = "."), mustWork = TRUE)
+if (!file.exists(file.path(PROJECT_DIR, "README.md")))
+  stop("PROJECT_DIR does not point at the repository root: ", PROJECT_DIR)
+
+DATA_DIR      <- file.path(PROJECT_DIR, "data")
+RESULTS_DIR   <- file.path(PROJECT_DIR, "results")
+FIGURES_DIR   <- file.path(RESULTS_DIR, "figures")
+CH4_DIR <- file.path(DATA_DIR, "chapter4")
+
+good_chr <- c("chr2L", "chr2R", "chr3L", "chr3R", "chr4", "chrX")   # dm6 major arms
+
+dir.create(FIGURES_DIR, recursive = TRUE, showWarnings = FALSE)
+
+CTRL_FINAL_DIR <- file.path(PROJECT_DIR, "data/final_peaks")
+CTRL_QC_DIR    <- file.path(PROJECT_DIR, "04_qc")
+CTRL_FIMO_ROOT <- file.path(PROJECT_DIR, "data/ctrl_tf", "fimo")
+CTRL_FASTA_DIR <- file.path(CTRL_FIMO_ROOT, "input_fastas")
+
+dir.create(CTRL_FIMO_ROOT, recursive = TRUE, showWarnings = FALSE)
+dir.create(CTRL_FASTA_DIR, recursive = TRUE, showWarnings = FALSE)
+
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(rtracklayer)
+  library(Biostrings)
+  library(BSgenome.Dmelanogaster.UCSC.dm6)
+})
+# ---- Helper: read narrowPeak ----
+read_narrowpeak <- function(path) {
+  if (!file.exists(path)) stop("narrowPeak file not found: ", path)
+  df <- read.table(path, sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+  GRanges(
+    seqnames    = df[[1]],
+    ranges      = IRanges(start = df[[2]] + 1L, end = df[[3]]),
+    score       = df[[5]],
+    signalValue = df[[7]],
+    pValue      = df[[8]],
+    qValue      = df[[9]]
+  )
+}
+
+load_peaks <- function(fname) {
+  gr <- read_narrowpeak(file.path(CTRL_FINAL_DIR, fname))
+  gr <- keepSeqlevels(gr,
+                      intersect(good_chr, seqlevels(gr)),
+                      pruning.mode = "coarse")
+  sort(gr)
+}
+
+# ---- Final IDR peak sets for the four retained controls ----
+TWI_peaks <- load_peaks("TWI_IDR0.05.final.narrowPeak")
+VVL_peaks <- load_peaks("VVL_IDR0.05.final.narrowPeak")
+RIB_peaks <- load_peaks("RIB_IDR0.05.final.narrowPeak")
+DA_peaks  <- load_peaks("DA_IDR0.05.final.narrowPeak")
+
+# ---- Annotate enhancer overlap on each control peak set ----
+# Reuses the same column name ($overlaps_enhancer) as the heterodimers.
+annotate_enhancer_overlap_local <- function(gr, enhancers) {
+  gr$overlaps_enhancer <- countOverlaps(gr, enhancers,
+                                        ignore.strand = TRUE) > 0
+  gr
+}
+
+TWI_peaks <- annotate_enhancer_overlap_local(TWI_peaks, enhancers_filt)
+VVL_peaks <- annotate_enhancer_overlap_local(VVL_peaks, enhancers_filt)
+RIB_peaks <- annotate_enhancer_overlap_local(RIB_peaks, enhancers_filt)
+DA_peaks  <- annotate_enhancer_overlap_local(DA_peaks,  enhancers_filt)
+
+cat(sprintf("TWI: %d peaks (%d enhancer-overlapping)\n",
+            length(TWI_peaks), sum(TWI_peaks$overlaps_enhancer)))
+cat(sprintf("VVL: %d peaks (%d enhancer-overlapping)\n",
+            length(VVL_peaks), sum(VVL_peaks$overlaps_enhancer)))
+cat(sprintf("RIB: %d peaks (%d enhancer-overlapping)\n",
+            length(RIB_peaks), sum(RIB_peaks$overlaps_enhancer)))
+cat(sprintf("DA: %d peaks (%d enhancer-overlapping)\n",
+            length(DA_peaks), sum(DA_peaks$overlaps_enhancer)))
+stopifnot(length(DA_peaks) == 923L, sum(DA_peaks$overlaps_enhancer) == 264L)
+```
+
+---
+
+```{r ctrl-qc-table, include=TRUE, eval=TRUE}
+# QC summary table for four retained controls.
+# NSC, RSC, fragment estimate from phantompeakqualtools (column 3 of .spp_metrics.txt or _spp.clean.txt, first comma-separated value); FRiP and median peak width from production peak-calling SLURM log (DA: production_peaks_da.sh log).
+# NSC/RSC thresholds: 1.05, 0.8.
+
+qc_ctrl <- data.frame(
+  Factor      = c("TWI", "TWI", "VVL", "VVL", "RIB", "RIB", "DA",  "DA"),
+  Replicate   = c("rep1", "rep2", "rep1", "rep2", "rep1", "rep2", "rep1", "rep2"),
+  Library     = c("SE",   "SE",   "PE",   "PE",   "PE",   "PE",   "SE",  "SE"),
+  Frag_est    = c(210L,   230L,   190L,   160L,   175L,   180L,   200L,  180L),
+  NSC         = c(1.017,  1.033,  1.060,  1.057,  1.030,  1.032,  1.012, 1.013),
+  RSC         = c(1.027,  1.335,  1.748,  1.487,  1.802,  2.288,  0.916, 0.974),
+  Quality_tag = c(1L,     1L,     2L,     1L,     2L,     2L,     0L,    0L),
+  FRiP        = c(0.0847, 0.1063,    # TWI: from the production_peaks_twi.sh output
+                  0.0241,   0.0226,      # VVL
+                  0.0108,   0.0104,      # RIB
+                  0.0148,   0.0137),     # DA: from the production_peaks_da.sh output
+  stringsAsFactors = FALSE
+)
+
+ctrl_factor_summary <- data.frame(
+  Factor          = c("TWI", "VVL", "RIB", "DA"),
+  N_final_peaks   = c(length(TWI_peaks), length(VVL_peaks), length(RIB_peaks), length(DA_peaks)),
+  Median_width_bp = c(median(width(TWI_peaks)),
+                      median(width(VVL_peaks)),
+                      median(width(RIB_peaks)),
+                      median(width(DA_peaks))),
+  N_enh_peaks     = c(sum(TWI_peaks$overlaps_enhancer),
+                      sum(VVL_peaks$overlaps_enhancer),
+                      sum(RIB_peaks$overlaps_enhancer),
+                      sum(DA_peaks$overlaps_enhancer)),
+  stringsAsFactors = FALSE
+)
+
+cat("\n=== Per-replicate QC ===\n")
+print(qc_ctrl, row.names = FALSE)
+cat("\n=== Per-factor summary ===\n")
+print(ctrl_factor_summary, row.names = FALSE)
+```
+
+---
+
+```{r ctrl-export-bed-for-fasta, include=TRUE, eval=TRUE}
+# ---- Export enhancer-overlapping peaks as BED for FASTA extraction ----
+# Uses the centre of each peak ±100 bp, matching the convention used in
+# the main Chapter 4 FIMO scanning chunks (200 bp summit-centred windows).
+
+write_centre_bed <- function(gr_full, out_path, half_window = 100L) {
+  gr <- gr_full[gr_full$overlaps_enhancer]
+  centre <- (start(gr) + end(gr)) %/% 2L
+  df <- data.frame(
+    chr   = as.character(seqnames(gr)),
+    start = pmax(centre - half_window - 1L, 0L),  # 0-based BED
+    end   = centre + half_window,
+    name  = paste0("peak_", seq_along(gr))
+  )
+  write.table(df, out_path, sep = "\t", quote = FALSE,
+              row.names = FALSE, col.names = FALSE)
+  cat("Wrote", nrow(df), "regions to", out_path, "\n")
+}
+
+write_centre_bed(TWI_peaks, file.path(CTRL_FASTA_DIR, "TWI_enh_summits_200bp.bed"))
+write_centre_bed(VVL_peaks, file.path(CTRL_FASTA_DIR, "VVL_enh_summits_200bp.bed"))
+write_centre_bed(RIB_peaks, file.path(CTRL_FASTA_DIR, "RIB_enh_summits_200bp.bed"))
+write_centre_bed(DA_peaks,  file.path(CTRL_FASTA_DIR, "DA_enh_summits_200bp.bed"))
+```
+
+---
+
+```{bash ctrl-fasta-extract, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ---- BED -> FASTA for the four controls ----
+set -euo pipefail
+
+# Use $HOME (or the absolute path), never bare ~ inside quoted strings.
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+CTRL_FASTA_DIR="${PROJECT_DIR}/data/ctrl_tf/fimo/input_fastas"
+DM6_FA="${PROJECT_DIR}/reference/dm6.fa"
+
+# Pre-flight checks
+[ -f "${DM6_FA}" ]                      || { echo "MISSING genome FASTA: ${DM6_FA}";  exit 1; }
+[ -d "${CTRL_FASTA_DIR}" ]              || { echo "MISSING input dir: ${CTRL_FASTA_DIR}"; exit 1; }
+for F in TWI VVL RIB DA; do
+  [ -f "${CTRL_FASTA_DIR}/${F}_enh_summits_200bp.bed" ] || \
+    { echo "MISSING BED for ${F}; run the R chunks first"; exit 1; }
+done
+
+for FACTOR in TWI VVL RIB DA
+do
+  bedtools getfasta \
+    -fi "${DM6_FA}" \
+    -bed "${CTRL_FASTA_DIR}/${FACTOR}_enh_summits_200bp.bed" \
+    -fo  "${CTRL_FASTA_DIR}/${FACTOR}_enh_summits_200bp.fa" \
+    -nameOnly
+  # -nameOnly, not -name. `-name` emits ">peak_1::chr3L:106074-106275"; FIMO
+  # parses the embedded locator and writes the CHROMOSOME into sequence_name,
+  # so unique(sequence_name) counts chromosomes (6, 6, 5, 5) instead of peaks.
+  echo "${FACTOR}: $(grep -c '^>' ${CTRL_FASTA_DIR}/${FACTOR}_enh_summits_200bp.fa) sequences"
+done
+```
+
+---
+
+```{bash ctrl-fimo-run, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ---- Run FIMO Motif2 scan on the four controls ----
+# Parameters identical to main Chapter 4 FIMO scanning of heterodimers:
+# --thresh 1e-4, q-value < 0.05 applied downstream in R.
+
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+CTRL_FASTA_DIR="${PROJECT_DIR}/data/ctrl_tf/fimo/input_fastas"
+CTRL_FIMO_ROOT="${PROJECT_DIR}/data/ctrl_tf/fimo"
+MOTIF2_MEME="${PROJECT_DIR}/data/chapter3/STRCACTGARARAAA.meme"   # Motif2 PWM
+
+[ -f "${MOTIF2_MEME}" ] || { echo "MISSING Motif2 .meme: ${MOTIF2_MEME}"; exit 1; }
+
+for FACTOR in TWI VVL RIB DA
+do
+  OUTDIR="${CTRL_FIMO_ROOT}/${FACTOR}_motif2"
+  mkdir -p "${OUTDIR}"
+  fimo --thresh 1.0E-4 --oc "${OUTDIR}" \
+       "${MOTIF2_MEME}" \
+       "${CTRL_FASTA_DIR}/${FACTOR}_enh_summits_200bp.fa"
+  echo "${FACTOR} FIMO complete -> ${OUTDIR}/fimo.tsv"
+done
+```
+
+---
+
+```{r ctrl-matched-bg, include=TRUE, eval=TRUE}
+# ---- Build a GC- and length-matched non-Tgo enhancer background ----
+# Central quantitative test: if Motif2 enrichment at the four heterodimers
+# is heterodimer-specific, it should be ABSENT at non-Tgo-bound enhancers
+# matched for GC composition and width.
+
+# Pool all four heterodimer peak sets, take their union as "Tgo-bound"
+all_hetero <- c(Trh_Tgo_joint_filt,
+                Sim_Tgo_joint_filt,
+                Dys_Tgo_joint_filt,
+                Sima_Tgo_joint_filt)
+# Strip the metadata columns to allow c() then reduce()
+mcols(all_hetero) <- NULL
+all_hetero <- reduce(all_hetero)
+
+# Non-Tgo enhancers
+non_tgo_enh <- enhancers_filt[
+  countOverlaps(enhancers_filt, all_hetero, ignore.strand = TRUE) == 0L
+]
+cat("Non-Tgo enhancers available for matching:", length(non_tgo_enh), "\n")
+
+# Reference distribution: GC and width of the 614 Trh/Tgo joint peaks
+ref_seqs  <- getSeq(BSgenome.Dmelanogaster.UCSC.dm6, Trh_Tgo_joint_filt)
+ref_gc    <- as.numeric(letterFrequency(ref_seqs, letters = "GC", as.prob = TRUE))
+ref_width <- width(Trh_Tgo_joint_filt)
+
+cand_seqs  <- getSeq(BSgenome.Dmelanogaster.UCSC.dm6, non_tgo_enh)
+cand_gc    <- as.numeric(letterFrequency(cand_seqs, letters = "GC", as.prob = TRUE))
+cand_width <- width(non_tgo_enh)
+
+# Bin by GC (5 bins) x width (4 bins) = 20 strata
+gc_breaks <- quantile(ref_gc,    probs = seq(0, 1, 0.2))
+w_breaks  <- quantile(ref_width, probs = c(0, 0.25, 0.5, 0.75, 1))
+
+bin_seq <- function(gc, w, gc_br, w_br) {
+  paste(
+    findInterval(gc, gc_br, rightmost.closed = TRUE),
+    findInterval(w,  w_br,  rightmost.closed = TRUE),
+    sep = "_"
+  )
+}
+ref_bins  <- bin_seq(ref_gc,  ref_width,  gc_breaks, w_breaks)
+cand_bins <- bin_seq(cand_gc, cand_width, gc_breaks, w_breaks)
+
+set.seed(777)
+matched_idx <- unlist(lapply(unique(ref_bins), function(b) {
+  n_need <- sum(ref_bins == b)
+  pool   <- which(cand_bins == b)
+  if (length(pool) == 0L) return(integer(0))
+  sample(pool, min(n_need, length(pool)), replace = FALSE)
+}))
+
+matched_bg <- non_tgo_enh[matched_idx]
+cat("Matched background size:", length(matched_bg),
+    "(target:", length(Trh_Tgo_joint_filt), ")\n")
+
+# Export BED (centre ±100 bp, matching FIMO convention)
+bg_centre <- (start(matched_bg) + end(matched_bg)) %/% 2L
+df_bg <- data.frame(
+  chr   = as.character(seqnames(matched_bg)),
+  start = pmax(bg_centre - 100L - 1L, 0L),
+  end   = bg_centre + 100L,
+  name  = paste0("bg_", seq_along(matched_bg))
+)
+# matched_bg_200bp.bed in data/ is the draw the reported numbers rest on.
+# Re-running this chunk gives a different draw under the same seed (the bin
+# membership of the candidate enhancers differs slightly from the original
+# session), so that file is not overwritten: a fresh draw is written alongside it.
+bg_bed_path <- file.path(CTRL_FASTA_DIR, "matched_bg_200bp.bed")
+if (file.exists(bg_bed_path)) {
+  bg_bed_path <- file.path(CTRL_FASTA_DIR, "matched_bg_200bp.regenerated.bed")
+}
+write.table(df_bg, bg_bed_path, sep = "\t", quote = FALSE,
+            row.names = FALSE, col.names = FALSE)
+cat("Matched-BG BED:", bg_bed_path, "\n")
+```
+
+---
+
+```{bash ctrl-matched-bg-fasta-and-fimo, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ---- FASTA + FIMO on the matched non-Tgo background ----
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+CTRL_FASTA_DIR="${PROJECT_DIR}/data/ctrl_tf/fimo/input_fastas"
+CTRL_FIMO_ROOT="${PROJECT_DIR}/data/ctrl_tf/fimo"
+DM6_FA="${PROJECT_DIR}/reference/dm6.fa"
+MOTIF2_MEME="${PROJECT_DIR}/data/chapter3/STRCACTGARARAAA.meme"
+
+bedtools getfasta \
+  -fi "${DM6_FA}" \
+  -bed "${CTRL_FASTA_DIR}/matched_bg_200bp.bed" \
+  -fo  "${CTRL_FASTA_DIR}/matched_bg_200bp.fa" \
+  -nameOnly
+# -nameOnly (not -name): with -name FIMO parses the embedded locator and reports the chromosome
+
+OUTDIR="${CTRL_FIMO_ROOT}/matched_bg_motif2"
+mkdir -p "${OUTDIR}"
+fimo --thresh 1.0E-4 --oc "${OUTDIR}" \
+     "${MOTIF2_MEME}" \
+     "${CTRL_FASTA_DIR}/matched_bg_200bp.fa"
+echo "Matched background FIMO complete -> ${OUTDIR}/fimo.tsv"
+```
+
+---
+
+```{r ctrl-fimo-load, include=TRUE, eval=TRUE}
+# Read FIMO results, accepting p.value or p_value columns.
+# Use p < 1e-4 as the significance criterion, not q < 0.05; p is comparable across set sizes, q is not.
+# Same convention enforced in 04_chapter_analyses/chapter4/ch4_motif2_attribution.R.
+
+read_fimo_hits <- function(fimo_tsv, p_thresh = 1e-4) {
+  if (!file.exists(fimo_tsv)) {
+    warning("FIMO output not found: ", fimo_tsv)
+    return(character(0))
+  }
+  df <- read.table(fimo_tsv, sep = "\t", header = TRUE,
+                   comment.char = "#", stringsAsFactors = FALSE)
+  p_col <- if      ("p_value"  %in% names(df)) "p_value"
+           else if ("p.value"  %in% names(df)) "p.value"
+           else stop("FIMO output has neither p_value nor p.value column: ",
+                     fimo_tsv)
+  if (!"sequence_name" %in% names(df)) {
+    stop("FIMO output missing sequence_name column: ", fimo_tsv)
+  }
+  # CHECK: sequence_name must identify a REGION, not a chromosome.
+  # `bedtools getfasta -name` writes ">peak_1::chr3L:106074-106275"; FIMO parses
+  # the embedded locator and puts the chromosome in sequence_name, so
+  # unique(sequence_name) silently returns the number of chromosomes. That is
+  # exactly how the published control panel came to report 6/6/5/5 positives.
+  # Regenerate the FASTA with -nameOnly if this fires.
+  if (all(grepl("^chr[0-9XYLRUHet]+$", unique(df$sequence_name)))) {
+    stop("FIMO sequence_name values are chromosome names, not region ids: ",
+         fimo_tsv, "\n  Regenerate the FASTA with `bedtools getfasta -nameOnly`.")
+  }
+  df <- df[!is.na(df[[p_col]]) & df[[p_col]] < p_thresh, ]
+  unique(df$sequence_name)
+}
+
+fimo_twi <- file.path(CTRL_FIMO_ROOT, "TWI_motif2",        "fimo.tsv")
+fimo_vvl <- file.path(CTRL_FIMO_ROOT, "VVL_motif2",        "fimo.tsv")
+fimo_rib <- file.path(CTRL_FIMO_ROOT, "RIB_motif2",        "fimo.tsv")
+fimo_da  <- file.path(CTRL_FIMO_ROOT, "DA_motif2",         "fimo.tsv")
+fimo_bg  <- file.path(CTRL_FIMO_ROOT, "matched_bg_motif2", "fimo.tsv")
+
+hits_twi <- read_fimo_hits(fimo_twi)
+hits_vvl <- read_fimo_hits(fimo_vvl)
+hits_rib <- read_fimo_hits(fimo_rib)
+hits_da  <- read_fimo_hits(fimo_da)
+hits_bg  <- read_fimo_hits(fimo_bg)
+
+# Numerators (Motif2-positive peak count) and denominators
+# (enhancer-overlapping peak count) for each set
+n_twi_scan <- sum(TWI_peaks$overlaps_enhancer)
+n_vvl_scan <- sum(VVL_peaks$overlaps_enhancer)
+n_rib_scan <- sum(RIB_peaks$overlaps_enhancer)
+n_da_scan  <- sum(DA_peaks$overlaps_enhancer)
+n_bg_scan  <- length(matched_bg)
+
+n_twi_m2 <- length(hits_twi)
+n_vvl_m2 <- length(hits_vvl)
+n_rib_m2 <- length(hits_rib)
+n_da_m2  <- length(hits_da)
+n_bg_m2  <- length(hits_bg)
+
+# Motif2 control panel: Twi, Vvl, Rib and Da, with the Trh/Tgo reference and
+# the matched background, every row a 201 bp window scanned at p < 1e-4. The
+# table is written by 04_chapter_analyses/chapter4/ch4_ctrl_motif2_panel.R to
+# data/chapter4/table4_ctrl_motif2_frequency.csv; this chunk reads it and
+# checks that the counts above agree with it.
+panel_csv <- file.path(CH4_DIR, "table4_ctrl_motif2_frequency.csv")
+if (!file.exists(panel_csv)) {
+  stop("Run 04_chapter_analyses/chapter4/ch4_ctrl_motif2_panel.R first; not found: ",
+       panel_csv)
+}
+summary_tbl <- read.csv(panel_csv, check.names = FALSE, stringsAsFactors = FALSE)
+stopifnot(nrow(summary_tbl) == 6L,
+          identical(summary_tbl$Factor[2:5], c("TWI", "VVL", "RIB", "DA")))
+n_pos <- setNames(summary_tbl$N_Motif2_pos, summary_tbl$Factor)
+stopifnot(n_pos[["TWI"]] == n_twi_m2, n_pos[["VVL"]] == n_vvl_m2,
+          n_pos[["RIB"]] == n_rib_m2, n_pos[["DA"]] == n_da_m2,
+          n_pos[["Matched non-Tgo BG"]] == n_bg_m2)
+
+cat("\n=== Motif2 frequency: controls vs heterodimer reference ===\n")
+print(summary_tbl, row.names = FALSE)
+```
+
+---
+

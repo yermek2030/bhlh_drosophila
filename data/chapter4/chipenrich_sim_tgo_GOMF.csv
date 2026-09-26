@@ -1,0 +1,2 @@
+"Geneset.Type","Geneset.ID","Description","P.value","FDR","Effect","Odds.Ratio","Status","N.Geneset.Genes","N.Geneset.Peak.Genes","Geneset.Avg.Gene.Length","Geneset.Peak.Genes"
+"Gene Ontology Molecular Function","GO:0003735","structural constituent of ribosome",7.45626191863039e-14,4.81674519943523e-11,1.99091430273582,7.32222543348292,"enriched",170,18,1384.18235294118,"31022, 31897, 33688, 34329, 34352, 34754, 36688, 36985, 38208, 38302, 38397, 38983, 39484, 41343, 42464, 43698, 44059, 251466"

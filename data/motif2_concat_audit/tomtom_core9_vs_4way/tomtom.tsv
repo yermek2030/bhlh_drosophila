@@ -1,0 +1,9 @@
+Query_ID	Target_ID	Optimal_offset	p-value	E-value	q-value	Overlap	Query_consensus	Target_consensus	Orientation
+M2_CORE9_STRCACTGA	Trh	0	1.09918e-08	4.3967e-08	7.16933e-08	9	GTACACTGA	GTGCACTGAGAGAAATAATA	+
+M2_CORE9_STRCACTGA	Sima	1	2.06192e-08	8.2477e-08	7.16933e-08	9	GTACACTGA	AGTACACTGAGAGAAATTAA	+
+M2_CORE9_STRCACTGA	Dys	0	2.6885e-08	1.0754e-07	7.16933e-08	9	GTACACTGA	GTGCACTGAGAGAAAAA	+
+M2_CORE9_STRCACTGA	Sim	4	0.719311	2.87724	0.880217	9	GTACACTGA	CCTTTTTCTCTCAGTGCA	-
+
+# Tomtom (Motif Comparison Tool): Version 5.5.5 compiled on Mar 10 2026 at 06:53:45
+# The format of this file is described at https://meme-suite.org/meme/doc/tomtom-output-format.html.
+# tomtom -no-ssc -oc data/motif2_concat_audit/tomtom_core9_vs_4way -verbosity 1 -min-overlap 9 -dist pearson -thresh 1 data/motif2_concat_audit/m2_core9.meme data/chapter4/motif2_4way_masked.meme

@@ -1,0 +1,4 @@
+"pwm","minp","usable_at_1e4"
+"full_15",7.95030008321918e-10,"YES"
+"core_9",2.40931927777983e-06,"YES"
+"tail_6",0.000329981175867456,"NO - returns 0 hits by construction"

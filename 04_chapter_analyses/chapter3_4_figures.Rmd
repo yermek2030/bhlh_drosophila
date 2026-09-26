@@ -1,0 +1,1703 @@
+---
+title: "Chapters 3 and 4 -- figure generators"
+author: "Yermek Aiten"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+This file draws the figures of Chapters 3 and 4.
+One chunk per figure, named by its figure number and the PNG it writes. Chunks are
+`eval=FALSE` so the file can be worked through one figure at a time; the `setup`
+chunk must be run first because it holds the shared paths, palette and theme that
+every figure chunk uses.
+
+Every chunk reads only cached analysis output (`.rds` / `.csv`), so nothing here
+recomputes an analysis; running a chunk redraws a figure from stored results.
+
+To rebuild everything in one command, run the last chunk of this file.
+
+```{r setup, include=TRUE, eval=TRUE}
+## Repository root: the environment variable PROJECT_DIR, or the working directory.
+PROJECT_DIR <- normalizePath(Sys.getenv("PROJECT_DIR", unset = "."), mustWork = TRUE)
+if (!file.exists(file.path(PROJECT_DIR, "README.md")))
+  stop("PROJECT_DIR does not point at the repository root: ", PROJECT_DIR)
+
+VALUES_FILE <- file.path(PROJECT_DIR, "results", "reported_values.tsv")
+
+read_value <- function(name) {
+  tab <- read.delim(VALUES_FILE, colClasses = "character", quote = "", comment.char = "")
+  tab$value[match(name, tab$name)]
+}
+
+
+## Colours
+PAL_INK <- c(
+  outline    = "#333333",   # bar and Venn outlines
+  gridline   = "#DDDDDD",
+  annotation = "#666666",   # p-values, n = counts
+  threshold  = "#882255",   # significance thresholds, +/-1.96 lines
+  fit        = "#4477AA",   # fitted / OLS trend lines
+  neutral    = "#BBBBBB",   # non-significant, background sets
+  band       = "#EDEDED",   # shaded stage/facet bands and strip backgrounds
+  highlight_band = "#4477AA", # tint marking an agreement region (used at low alpha)
+  emphasis   = "#CC3311",   # the one highlighted subset in an otherwise neutral plot
+## Ink for text on filled marks (e.g. significance stars in Fig 4.9 dot matrix).
+## black (#000000) chosen: worst-case WCAG contrast 4.34 over PAL_DIV; no single ink works over PAL_SEQ (viridis).
+## For PAL_SEQ heatmap labels use ink_on_seq() (below), keyed on tile lightness, worst-case 4.16:1.
+  on_mark    = "#000000",
+
+  ## Two-tier ink for ink_on_seq(). `on_mark_dark` is #1A1A1A rather
+  ## than the #000000 above: on the LIGHT half of viridis both clear the floor
+  ## comfortably, and #1A1A1A matches the ink weight of the surrounding axis text,
+  ## so the matrix does not look heavier than the panel around it.
+  on_mark_dark  = "#1A1A1A",
+  on_mark_light = "#FFFFFF"
+)
+
+PAL_HETERO <- c(
+  "Trh/Tgo"  = "#117733",   # green    L* 44
+  "Sim/Tgo"  = "#E69F00",   # amber    L* 71
+  "Dys/Tgo"  = "#66CCEE",   # sky      L* 77
+  "Sima/Tgo" = "#AA3377"    # magenta  L* 42
+)
+
+PAL_SUBUNIT <- c(
+  "Trh"  = PAL_HETERO[["Trh/Tgo"]],
+  "Sim"  = PAL_HETERO[["Sim/Tgo"]],
+  "Dys"  = PAL_HETERO[["Dys/Tgo"]],
+  "Sima" = PAL_HETERO[["Sima/Tgo"]],
+  "Tgo"  = "#DDCC77"
+)
+
+PAL_CONTEXT <- c(
+  prox_peak    = "#4477AA", # promoter-proximal peak (non-annotated)   blue
+  prox_enh     = "#332288", # promoter-proximal enhancer (annotated)   indigo
+  distal_enh   = "#DDAA33", # distal enhancer (annotated)  <- KEY CLASS  gold
+  distal_unann = "#994455", # distal peak (non-annotated)              maroon
+  all_peaks    = "#BBBBBB", # pooled / reference set                   grey
+  ## POOLED positional classes, supersets of the four subsets above, used by
+  ## figures that split peaks by POSITION only (Ch3 df$Context, Ch4 Subset).
+  ## They keep the family reading (cool = proximal, warm = distal) but are
+  ## distinct from every subset colour, so a reader cannot carry a
+  ## subset-specific claim across to a pooled figure. Chosen by measurement over
+  ## the three figures that use them: worst-case dE 34.6.
+  prox_all     = "#0077BB", # all promoter-proximal peaks (pooled)      deep blue
+  distal_all   = "#EE7733"  # all distal peaks (pooled)                 orange
+)
+
+PAL_CONTEXT_LABELS <- c(
+  ## --- (A) pooled positional ---
+  "Promoter"                               = PAL_CONTEXT[["prox_all"]],
+  "promoter-proximal"                          = PAL_CONTEXT[["prox_all"]],
+  "distal (>1 kb)"                         = PAL_CONTEXT[["distal_all"]],
+  "all peaks"                              = PAL_CONTEXT[["all_peaks"]],
+  ## --- (B) 2x2 position-by-annotation subsets ---
+  "Promoter-proximal peak (non-annotated)" = PAL_CONTEXT[["prox_peak"]],
+  "Promoter-proximal enhancer (annotated)" = PAL_CONTEXT[["prox_enh"]],
+  "Distal enhancer (annotated)"            = PAL_CONTEXT[["distal_enh"]],
+  "Distal peak (non-annotated)"            = PAL_CONTEXT[["distal_unann"]]
+)
+
+PAL_ARCH <- c(
+  alpha_generic = "#4477AA",  # generic alpha-subunit (all four)
+  tgo           = PAL_SUBUNIT[["Tgo"]],
+## CME/E-box duplex colour: minimises worst-case CIE76 dE (normal/deutan/protan/tritan) within each panel's three colours, over four panels, with Tgo and alphas fixed.
+## Constraints |dL*|>=15 from Tgo and chroma<=14. #9BA090 (sage, min dE 24.0) is the argmax over 113 candidates.
+## Runner-up #9E9E9E scored 21.2; gold alternative #997700 scored min dE 19.6.
+  cme_duplex    = "#9BA090",  # CME / E-box DNA duplex (sage, neutral scaffold)
+  motif_two     = "#882255",  # Motif2 element, where drawn
+  ink           = "#333333",
+  highlight     = "lightblue"   # soft yellow behind the E-box label only
+)
+
+
+## Bar chart
+thesis_p_expr <- function(p, digits = 2) {
+  if (is.na(p)) return(NA_character_)
+  ## The formatted value is QUOTED, so plotmath prints it as formatted rather
+  ## than re-formatting it as a number: unquoted, a Fisher p of 1.000 renders
+  ## as "1" and 2.10 as "2.1", losing the fixed significant figures that
+  ## must be preserved at every mention.
+  if (p < 1e-3) {
+    parts <- strsplit(formatC(p, format = "e", digits = digits), "e")[[1]]
+    sprintf("italic(p)=='%s' %%*%% 10^{%d}", parts[1], as.integer(parts[2]))
+  } else {
+    ## `digits` governs both branches. "fg" formats to significant digits
+    ## rather than decimal places; flag "#" keeps trailing zeros (p = 1
+    ## prints 1.0, not 1).
+    sprintf("italic(p)=='%s'",
+            formatC(signif(p, digits), format = "fg", digits = digits,
+                    flag = "#"))
+  }
+}
+
+
+## Base-graphics style
+HS <- list(
+  res       = 350,          # png(res = ) in the hand-drawn originals
+  pointsize = 12,
+  mar_main  = c(4.0, 4.0, 2.6, 0.8),   # c(4, 4, 2, 0.5) + room for a panel tag
+  mar_side  = c(4.0, 0.5, 2.6, 0.0),   # narrow "Observed" panel
+  cex_lab   = 1,
+  cex_axis  = 1,
+  cex_ann   = 1,            # in-panel annotation and stats block
+  cex_main  = 1,
+  cex_tag   = 1.2,          # (A), (B) panel letters, CAPITALS
+  lwd_rule  = 1.5,
+  lwd_bar   = 0.5,
+  las       = 1
+)
+
+hs_png <- function(path, width_in, height_in) {
+  png(filename = path,
+      width  = round(width_in  * HS$res),
+      height = round(height_in * HS$res),
+      res = HS$res, pointsize = HS$pointsize, bg = "white")
+}
+
+hs_close <- function() while (!is.null(dev.list())) dev.off()
+
+hs_par <- function(side = FALSE) {
+  par(mar = if (side) HS$mar_side else HS$mar_main,
+      las = HS$las, cex.lab = HS$cex_lab, cex.axis = HS$cex_axis,
+      mgp = c(2.6, 0.7, 0), tcl = -0.35)
+}
+
+hs_title <- function(main, tag = NULL, line = 0.9, cex.main = HS$cex_main) {
+  title(main = main, line = line, font.main = 2, cex.main = cex.main)
+  if (!is.null(tag))
+    ## `at` is the left edge of the PANEL (figure region), not of the plot
+    ## region. mtext(adj = 0) alone aligns to the plot region, so the letter is
+    ## inset by the width of the y-axis title and its tick labels. 0.004 nfc
+    ## keeps it off the canvas edge for the leftmost panel.
+    mtext(tag, side = 3, line = line - 0.2, adj = 0, font = 2, cex = HS$cex_tag,
+          at = grconvertX(0.004, from = "nfc", to = "user"))
+}
+
+hs_block <- function(where, items, col = "black", cex = HS$cex_ann) {
+  legend(where, legend = as.expression(items), bty = "n", cex = cex,
+         text.col = col, y.intersp = 1.3, xjust = 0)
+}
+
+hs_rule <- function(v, col, lty = 1) {
+  abline(v = v, col = col, lwd = HS$lwd_rule, lty = lty)
+  invisible(v)
+}
+
+hs_bars <- function(h, fill, border, lwd = HS$lwd_bar) {
+  nb <- length(h$breaks)
+  rect(h$breaks[-nb], 0, h$breaks[-1], h$counts,
+       col = fill, border = border, lwd = lwd)
+  invisible(h)
+}
+
+hs_gutter <- function(items, xlim, ylim, clear_at, gap = 0.04,
+                      cex = HS$cex_ann, y.intersp = 1.3) {
+  plot.window(xlim = xlim, ylim = ylim)
+  lg <- legend("topright", legend = as.expression(items), bty = "n",
+               cex = cex, y.intersp = y.intersp, plot = FALSE)
+  span      <- diff(xlim)
+  left_frac <- (lg$rect$left - xlim[1]) / span
+  stopifnot(left_frac > 0)                    # block wider than the panel
+  need <- clear_at + gap * span               # x the block's left edge must reach
+  xhi  <- xlim[1] + (need - xlim[1]) / left_frac
+  c(xlim[1], max(xlim[2], xhi))
+}
+
+hs_up   <- function(f) { u <- par("usr"); u[3] + f * (u[4] - u[3]) }
+
+suppressPackageStartupMessages({library(ggplot2); library(patchwork)})
+## thesis_p_expr(): the plotmath form of a p-value, italic p included.
+## Every p drawn in this file goes through it, so no figure can disagree with
+## another on significant figures or on the 10^-n form.
+
+OUT <- file.path(PROJECT_DIR, "results", "figures")
+if (!dir.exists(OUT)) dir.create(OUT, recursive = TRUE)
+AUD <- file.path(PROJECT_DIR, "data/reference_sets")
+AX3 <- file.path(PROJECT_DIR, "data/chapter3")
+AX4 <- file.path(PROJECT_DIR, "data/chapter4")
+RB  <- file.path(PROJECT_DIR, "data/motif2_robustness")
+
+## ---- plotting theme ladder ----
+BASE <- 11; ANN <- BASE - 2; TICK <- BASE - 2
+INK  <- PAL_INK[["outline"]]; ANNC <- PAL_INK[["annotation"]]
+NEUT <- PAL_INK[["neutral"]]; EMPH <- PAL_INK[["emphasis"]]
+M2   <- PAL_ARCH[["motif_two"]]
+COL_D <- PAL_CONTEXT[["distal_all"]]   # pooled distal class, used by Fig 3.18/3.19
+
+th_house <- function(base = BASE) {
+  theme_classic(base_size = base) +
+    theme(
+      ## Plain (non-bold) axis titles: bold weight would make axis titles
+      ## compete with the panel letters, which are the only bold
+      ## furniture the house style wants (plot.tag below stays bold).
+      axis.title = element_text(size = base - 0.5),
+      axis.title.x = element_text(margin = margin(t = 6)),
+      axis.title.y = element_text(margin = margin(r = 6)),
+      axis.text = element_text(size = base - 2, colour = "black"),
+      axis.text.x = element_text(margin = margin(t = 2)),
+      axis.line = element_line(linewidth = 0.35, colour = INK),
+      axis.ticks = element_line(linewidth = 0.35, colour = INK),
+      axis.ticks.length = unit(2.5, "pt"),
+      panel.grid = element_blank(),
+      strip.text = element_text(face = "bold", size = base),
+      strip.background = element_rect(fill = NA, colour = INK, linewidth = 0.6),
+      panel.spacing = unit(1.0, "cm"),
+      plot.tag = element_text(size = base + 2, face = "bold"),
+      plot.title = element_text(size = base, face = "bold", hjust = 0,
+                                margin = margin(b = 5)),
+      plot.subtitle = element_text(size = base - 1.5, colour = ANNC, hjust = 0,
+                                   margin = margin(b = 5)),
+      plot.caption = element_text(size = base - 2.5, colour = ANNC,
+                                  hjust = 0, margin = margin(t = 5)),
+      plot.margin = margin(8, 12, 8, 8),
+      legend.position = "top",
+      legend.title = element_text(size = base - 2, face = "bold"),
+      legend.text = element_text(size = base - 2),
+      legend.key = element_blank(),
+      legend.key.size = unit(11, "pt"),
+      legend.spacing.x = unit(6, "pt")
+    )
+}
+
+## thesis_bar() theme, used for Fig 3.6, 3.12, 5.6.
+## Differences
+th_barhouse <- function(base = BASE) {
+  theme(axis.line        = element_line(linewidth = 0.5, colour = "black"),
+        axis.ticks       = element_line(linewidth = 0.5, colour = "black"),
+        strip.text       = element_text(face = "bold", size = base, hjust = 0.5,
+                                        margin = margin(4, 4, 4, 4)),
+        strip.background = element_rect(fill = NA, colour = "black",
+                                        linewidth = 0.6),
+        panel.spacing    = unit(1.0, "cm"))
+}
+
+
+## additional palette roles used by the base-R figures (3.15-3.17)
+THR <- PAL_INK[["threshold"]]   # dashed significance thresholds
+FIT <- PAL_INK[["fit"]]         # fitted / overlaid density curves
+```
+
+## Figure: ch3_refset_partition_enrichment.png
+```{r, include=TRUE, eval=FALSE, 'Figure 3.9 - ch3_refset_partition_enrichment.png'}
+
+## ============================================================
+## 3.9  Grouped fold-lollipop  ->  DUMBBELL against the permutation null envelope
+## ============================================================
+lenm <- read.csv(file.path(AUD, "refset_lenmatched_5000.csv"))
+ordA <- c("trach_only", "sg_only", "both", "screen_only")
+labA <- c(trach_only = "Tracheal only", sg_only = "Salivary gland only",
+          both = "Both tissues",
+          screen_only = "Screen-derived\n(no BDGP tissue term)")
+d39 <- lenm[match(ordA, lenm$partition), ]
+d39$null_sd <- (d39$observed - d39$null_mean) / d39$Z      # Z is (obs-mu)/sd
+d39$lab   <- factor(labA[d39$partition], levels = rev(labA[ordA]))
+d39$focal <- d39$partition == "sg_only"
+d39$col   <- ifelse(d39$focal, EMPH, NEUT)
+d39$note  <- sprintf("%.2f\u00d7  (%d obs. vs %.1f exp.)%s",
+                     d39$fold, d39$observed, d39$null_mean,
+                     ifelse(d39$p_emp < 0.05, "*", ""))
+
+p39 <- ggplot(d39, aes(y = lab)) +
+  geom_errorbar(aes(xmin = null_mean - 1.96 * null_sd,
+                    xmax = null_mean + 1.96 * null_sd),
+                orientation = "y", width = 0.16, colour = NEUT, linewidth = 0.45) +
+  geom_segment(aes(x = null_mean, xend = observed, yend = lab, colour = I(col)),
+               linewidth = 0.9) +
+  geom_point(aes(x = null_mean), shape = 21, size = 2.5,
+             fill = "white", colour = ANNC, stroke = 0.6) +
+  geom_point(aes(x = observed, colour = I(col)), size = 3.1) +
+  geom_text(aes(x = pmax(observed, null_mean + 1.96 * null_sd), label = note,
+                colour = I(ifelse(focal, EMPH, ANNC))),
+            hjust = -0.10, size = ANN / .pt) +
+  annotate("segment", x = 0, xend = 80, y = 0.42, yend = 0.42,
+           colour = INK, linewidth = 0.35) +
+  scale_x_continuous(limits = c(0, 108), breaks = seq(0, 80, 20),
+                     expand = expansion(mult = c(0, 0))) +
+  coord_cartesian(clip = "off", ylim = c(0.75, 4.25)) +
+  labs(x = "Reference genes with a Trh/Tgo peak within 1 kb (count)", y = NULL) +
+  th_house() +
+  theme(axis.line.x = element_blank())
+ggsave(file.path(OUT, "ch3_refset_partition_enrichment.png"), p39,
+       width = 7.6, height = 3.3, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig3_19_motif2_perm_null.png
+```{r, include=TRUE, eval=FALSE, 'Figure 3.15 - fig3_19_motif2_perm_null.png'}
+
+## ============================================================
+## 3.15  Location-matched permutation null for Motif2 enhancer co-localisation
+## ============================================================
+pm <- readRDS(file.path(AX3, "perm_motif2_enh_or.rds"))
+stopifnot(all(c("observed", "permuted", "zscore", "pval", "ntimes") %in% names(pm)))
+
+nullv <- pm$permuted
+obs   <- pm$observed
+mu    <- mean(nullv)
+sdv   <- sd(nullv)
+q95   <- as.numeric(quantile(nullv, 0.95))
+stopifnot(length(nullv) == pm$ntimes, obs > q95)
+
+bw  <- 2
+brk <- seq(floor(min(nullv) / bw) * bw, ceiling(max(nullv) / bw) * bw, by = bw)
+h   <- hist(nullv, breaks = brk, plot = FALSE)
+
+hs_png(file.path(OUT, "fig3_19_motif2_perm_null.png"), 7.8, 3.8)
+hs_par()
+
+plot(NA, NA,
+     xlim = c(min(brk) - 2, obs + 24),
+     ylim = c(0, max(h$counts) * 1.34),
+     xlab = "Count of enhancer overlaps (permuted)",
+     ylab = "Permutations",
+     axes = FALSE)
+
+## tail at or above the observed count
+rect(obs, 0, par("usr")[2], par("usr")[4],
+     col = adjustcolor(EMPH, alpha.f = 0.08), border = NA)
+
+hs_bars(h, fill = adjustcolor(NEUT, alpha.f = 0.5), border = INK)
+
+## 95th percentile of the null, then the observed value
+hs_rule(q95, THR,  lty = 2)
+hs_rule(obs, EMPH, lty = 1)
+
+axis(1, at = seq(50, 130, 10))
+axis(2)
+box()
+
+text(q95, hs_up(0.86), pos = 2, col = THR, cex = HS$cex_ann,
+     labels = bquote(Ev[perm]^{0.05} == .(round(q95))))
+text(obs, hs_up(0.36), pos = 4, col = EMPH, cex = HS$cex_ann, font = 2,
+     labels = bquote(Ev[obs] == .(obs)))
+
+hs_block("topright", list(
+  bquote(bar(Ev)[perm] == .(sprintf("%.1f", mu)) ~ (SD ~ .(sprintf("%.1f", sdv)))),
+  bquote(italic(Z) == .(sprintf("%.2f", pm$zscore))),
+  bquote(italic(p) == .(formatC(pm$pval, format = "e", digits = 2))),
+  bquote(n[perm] == .(pm$ntimes))
+))
+
+hs_title("Location-matched null distribution")
+hs_close()
+
+cat(sprintf("Saved: fig3_19_motif2_perm_null.png | obs=%d q95=%g mean=%.1f SD=%.1f Z=%.2f p=%s n=%d\n",
+            obs, q95, mu, sdv, pm$zscore,
+            formatC(pm$pval, format = "e", digits = 2), pm$ntimes))
+```
+
+## Figure: fig3_20_motif2_summit_annulus.png
+```{r, include=TRUE, eval=FALSE, 'Figure 3.16 - fig3_20_motif2_summit_annulus.png'}
+
+## ---- data (cached) ---------------------------------------------------------
+sd16 <- read.csv(file.path(RB, "R11b_summit_distances.csv"))$dist
+stopifnot(length(sd16) > 0)
+bt   <- binom.test(sum(sd16 < 0), sum(sd16 != 0))
+
+BW <- 20
+brkA <- seq(-260, 260, by = BW)
+stopifnot(all(abs(sd16) <= max(brkA)))
+hA   <- hist(sd16, breaks = brkA, plot = FALSE)
+
+## observed and mirrored densities, rescaled to the count axis
+dn <- density(sd16, bw = "SJ"); dr <- density(-sd16, bw = "SJ")
+sc <- length(sd16) * BW
+
+ad   <- abs(sd16)
+hB   <- hist(ad, breaks = seq(0, 260, by = BW), plot = FALSE)
+modal <- hB$mids[which.max(hB$counts)]
+inner <- mean(ad <= 40)
+
+hs_png(file.path(OUT, "fig3_20_motif2_summit_annulus.png"), 8.8, 3.8)
+layout(matrix(c(1, 2), nrow = 1), widths = c(1.25, 1))
+
+## ---- (A) signed distance --------------------------------------------------
+hs_par()
+plot(NA, NA,
+     xlim = c(-250, 250),
+     ylim = c(0, max(c(hA$counts, dn$y * sc, dr$y * sc)) * 1.42),
+     xlab = "Signed distance, summit \u2192 Motif2 centre (bp)",
+     ylab = "Motif2 instances",
+     axes = FALSE)
+hs_bars(hA, fill = adjustcolor(M2, alpha.f = 0.80), border = "white")
+abline(v = 0, col = INK, lwd = 1, lty = 3)
+lines(dn$x, dn$y * sc, col = FIT, lwd = HS$lwd_rule, lty = 1)
+lines(dr$x, dr$y * sc, col = FIT, lwd = HS$lwd_rule, lty = 2)
+axis(1, at = seq(-200, 200, 100)); axis(2); box()
+
+hs_block("topleft", list(
+  bquote("sign test" ~ italic(p) == .(sprintf("%.2f", bt$p.value))),
+  bquote(.(sprintf("%.0f", 100 * bt$estimate)) * "% upstream")
+), col = ANNC)
+
+legend("topright", legend = c("observed", "mirrored (\u2212d)"),
+       col = FIT, lty = c(1, 2), lwd = HS$lwd_rule, bty = "n",
+       cex = HS$cex_ann, seg.len = 2.2, y.intersp = 1.3)
+
+hs_title("Signed distance", tag = "A")
+
+## ---- (B) folded distance --------------------------------------------------
+hs_par()
+plot(NA, NA,
+     xlim = c(0, 260),
+     ylim = c(0, max(hB$counts) * 1.34),
+     xlab = "Absolute distance from summit (bp)",
+     ylab = "Motif2 instances",
+     axes = FALSE)
+rect(0, 0, 40, par("usr")[4],
+     col = adjustcolor(NEUT, alpha.f = 0.30), border = NA)
+hs_bars(hB, fill = adjustcolor(M2, alpha.f = 0.80), border = "white")
+hs_rule(modal, EMPH, lty = 1)
+axis(1, at = seq(0, 240, 60)); axis(2); box()
+
+hs_block("topright", list(
+  bquote("modal radius" ~ .(sprintf("%.0f", modal)) ~ "bp"),
+  bquote(.(sprintf("%.0f", 100 * inner)) * "% within 40 bp")
+), col = ANNC)
+
+hs_title("Folded distance", tag = "B")
+hs_close()
+
+cat(sprintf("Saved: fig3_20_motif2_summit_annulus.png | n=%d sign p=%.2f upstream=%.0f%% modal=%.0f inner40=%.0f%%\n",
+            length(sd16), bt$p.value, 100 * bt$estimate, modal, 100 * inner))
+```
+
+## Figure: fig3_21_motif2_phylop.png
+```{r, include=TRUE, eval=FALSE, 'Figure 3.17 - fig3_21_motif2_phylop.png'}
+
+t3 <- readRDS(file.path(AX3, "test3_phylop_conservation.rds"))
+dA <- t3$full$table$motif - t3$full$table$flank
+dB <- t3$core$table$core  - t3$core$table$flank
+stopifnot(length(dA) == length(dB))
+
+BW <- 0.25
+
+## One paired-difference panel in base R.
+panel_paired <- function(v, pv, main, xlab, tag) {
+  med  <- median(v)
+  frac <- mean(v > 0)
+  brk  <- seq(floor(min(v) / BW) * BW, ceiling(max(v) / BW) * BW, by = BW)
+  h    <- hist(v, breaks = brk, plot = FALSE)
+
+  ## Annotation goes top-right. n and the test name ("Wilcoxon signed-rank")
+  ## are stated in the caption, so they are kept off the panel.
+  items <- list(
+    bquote("median" ~ .(sprintf("%+.2f", med))),
+    bquote(.(sprintf("%.0f", 100 * frac)) * "% above zero"),
+    bquote(italic(p) == .(formatC(pv, format = "e", digits = 1)))
+  )
+
+  hs_par()
+  plot.new()                                   # claim the layout cell first
+  ## Widen x only as far as the measured block width requires, so the block's
+  ## left edge clears the rightmost vertical rule. Axis stays on the data range.
+  ylim <- c(0, max(h$counts) * 1.45)
+  xlim <- hs_gutter(items, range(brk), ylim, clear_at = max(0, med))
+  plot.window(xlim = xlim, ylim = ylim)
+
+  hs_bars(h, fill = M2, border = "white")
+  hs_rule(0,   INK,  lty = 1)     # no difference
+  hs_rule(med, EMPH, lty = 1)     # observed median difference
+
+  tk <- pretty(range(brk)); tk <- tk[tk >= min(brk) & tk <= max(brk)]
+  axis(1, at = tk); axis(2); box()
+  title(xlab = xlab, ylab = "Motif2 instances")
+
+  hs_block("topright", items, col = ANNC)
+  hs_title(main, tag = tag)
+
+  stopifnot(med > 0)              # the conservation claim: motif > own flank
+  invisible(c(n = length(v), median = med, frac = frac, p = pv,
+              block_left = legend("topright", legend = as.expression(items),
+                                  bty = "n", cex = HS$cex_ann,
+                                  y.intersp = 1.3, plot = FALSE)$rect$left))
+}
+
+hs_png(file.path(OUT, "fig3_21_motif2_phylop.png"), 8.6, 3.6)
+layout(matrix(c(1, 2), nrow = 1))
+sA <- panel_paired(dA, t3$full$wilcox$p.value,
+                   main = "Full 15-bp Motif2",
+                   xlab = "phyloP difference, element \u2212 own flank",
+                   tag  = "A")
+sB <- panel_paired(dB, t3$core$wilcox$p.value,
+                   ## "pentamer", not "core": this panel scores positions 4-8,
+                   ## while "core" elsewhere in the text is the 9-bp
+                   ## scanned object
+                   main = "CACTG pentamer",
+                   xlab = "phyloP difference, pentamer \u2212 own flank",
+                   tag  = "B")
+hs_close()
+
+cat(sprintf("Saved: fig3_21_motif2_phylop.png | A: n=%d median=%+.2f %.0f%% p=%s | B: median=%+.2f %.0f%% p=%s\n",
+            sA[["n"]], sA[["median"]], 100 * sA[["frac"]],
+            formatC(sA[["p"]], format = "e", digits = 1),
+            sB[["median"]], 100 * sB[["frac"]],
+            formatC(sB[["p"]], format = "e", digits = 1)))
+cat(sprintf("  block clearance from median rule: A %+.3f, B %+.3f x-units (must be > 0)\n",
+            sA[["block_left"]] - sA[["median"]], sB[["block_left"]] - sB[["median"]]))
+stopifnot(sA[["block_left"]] > sA[["median"]], sB[["block_left"]] > sB[["median"]])
+```
+
+## Figure: fig3_23_threshold_sweep.png
+```{r, include=TRUE, eval=FALSE, 'Figure 3.18 - fig3_23_threshold_sweep.png'}
+
+## ============================================================
+## 3.18  or-vs-boundary sweep -> or + CI with shrinking denominator shown
+##       Sweep ORs become unstable past 5 kb as the distal set empties
+##       (n = 183 -> 7). Panel B shows this; result holds only where data remain.
+## t4 is loaded here rather than assumed to be in the environment.
+## ============================================================
+t4 <- readRDS(file.path(AX3, "threshold_sensitivity_and_accessibility.rds"))
+stopifnot(all(c("sweep","gc_strata","at_absorb","mh","cont") %in% names(t4)))
+
+sw <- t4$sweep
+sw$sig <- sw$p < 0.05
+YLO <- 0.55; YHI <- 7.2
+sw$clipped <- sw$ci_lo < YLO | sw$ci_hi > YHI
+p318a <- ggplot(sw, aes(cut_bp, OR)) +
+  geom_hline(yintercept = 1, colour = INK, linewidth = 0.4) +
+  ## The 20 kb CI spans 0.09-6.05 on 7 distal peaks. Letting it set the y range
+  ## empties the panel, so the axis is clamped and the clipped whisker is marked
+  ## explicitly, clamped, never silently dropped.
+  geom_ribbon(aes(ymin = pmax(ci_lo, YLO), ymax = pmin(ci_hi, YHI)),
+              fill = COL_D, alpha = 0.16) +
+  geom_line(colour = COL_D, linewidth = 0.8) +
+  geom_point(aes(shape = sig), colour = COL_D, size = 2.6, fill = "white", stroke = 0.9) +
+  scale_shape_manual(values = c(`TRUE` = 19, `FALSE` = 21), guide = "none") +
+  scale_x_log10(breaks = sw$cut_bp,
+                labels = ifelse(sw$cut_bp >= 1000, paste0(sw$cut_bp / 1000, " kb"),
+                                paste0(sw$cut_bp, " bp"))) +
+  geom_text(data = subset(sw, clipped), aes(y = YLO * 1.10, label = "CI\nclipped"),
+            size = (ANN - 1.5) / .pt, colour = ANNC, lineheight = 0.95, vjust = 0) +
+  scale_y_log10(limits = c(YLO, YHI), breaks = c(0.7, 1, 2, 3, 5),
+                oob = scales::squish) +
+  labs(x = NULL, y = "Odds ratio,\nMotif2 distal vs proximal") +
+  th_house() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = BASE - 1.5, lineheight = 1.0))
+
+p318b <- ggplot(sw, aes(cut_bp, n_distal)) +
+  geom_col(width = 0.14, fill = NEUT) +
+  geom_text(aes(label = n_distal), vjust = -0.35, size = (ANN - 1) / .pt, colour = ANNC) +
+  scale_x_log10(breaks = sw$cut_bp,
+                labels = ifelse(sw$cut_bp >= 1000, paste0(sw$cut_bp / 1000, " kb"),
+                                paste0(sw$cut_bp, " bp"))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.22))) +
+  labs(x = "Proximal / distal boundary (distance to nearest TSS)",
+       y = "Distal peaks (n)") +
+  th_house() +
+  theme(axis.title.y = element_text(size = BASE - 1.5))
+
+p318 <- (p318a / p318b) + plot_layout(heights = c(1.35, 1)) +
+  plot_annotation(tag_levels = "A")
+ggsave(file.path(OUT, "fig3_23_threshold_sweep.png"), p318,
+       width = 7.4, height = 4.2, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig3_22_accessibility_at.png
+```{r, include=TRUE, eval=FALSE, 'Figure 3.19 - fig3_22_accessibility_at.png'}
+
+## ============================================================
+## 3.19  Jitter/box accessibility panels  ->  GC-STRATIFIED FOREST + NESTED
+##       COEFFICIENT PLOT. The claim is "composition does not explain it"; the
+##       tests that establish that are a Mantel-Haenszel stratified or and a
+##       nested-model LRT, so plot THOSE rather than the raw covariate.
+## ============================================================
+if (!exists("t4")) t4 <- readRDS(file.path(AX3, "threshold_sensitivity_and_accessibility.rds"))
+stopifnot(all(c("gc_strata", "at_absorb", "mh", "cont") %in% names(t4)))
+
+gs <- t4$gc_strata
+per <- do.call(rbind, lapply(levels(gs$gcq), function(q) {
+  s <- gs[gs$gcq == q, ]
+  tb <- table(factor(s$distal2k, c(TRUE, FALSE)), factor(s$motif2, c(TRUE, FALSE)))
+  ft <- fisher.test(tb)
+  data.frame(stratum = sprintf("%s  (GC %.0f\u2013%.0f%%)", q, 100*min(s$gc_content), 100*max(s$gc_content)),
+             n = nrow(s), or = unname(ft$estimate), lo = ft$conf.int[1], hi = ft$conf.int[2])
+}))
+mh <- data.frame(stratum = "Mantel\u2013Haenszel\ncommon odds ratio", n = nrow(gs),
+                 or = unname(t4$mh$estimate), lo = t4$mh$conf.int[1], hi = t4$mh$conf.int[2])
+f319 <- rbind(per, mh)
+f319$stratum <- factor(f319$stratum, levels = rev(f319$stratum))
+f319$pooled  <- f319$n == nrow(gs)
+f319$note <- sprintf("%.2f [%.2f\u2013%.2f]  n=%d", f319$or, f319$lo, f319$hi, f319$n)
+
+p319a <- ggplot(f319, aes(or, stratum)) +
+  geom_vline(xintercept = 1, colour = INK, linewidth = 0.5) +
+  geom_errorbar(aes(xmin = lo, xmax = hi, colour = pooled), orientation = "y",
+                width = 0, linewidth = 0.7) +
+  geom_point(aes(colour = pooled, size = pooled, shape = pooled)) +
+  geom_text(aes(x = 105, label = note), hjust = 1, size = (ANN - 0.5) / .pt, colour = INK) +
+  scale_colour_manual(values = c(`FALSE` = NEUT, `TRUE` = COL_D), guide = "none") +
+  scale_size_manual(values = c(`FALSE` = 2.4, `TRUE` = 3.4), guide = "none") +
+  scale_shape_manual(values = c(`FALSE` = 19, `TRUE` = 18), guide = "none") +
+  scale_x_log10(limits = c(0.34, 108), breaks = c(0.5, 1, 2, 5, 10, 20)) +
+  annotate("segment", x = 0.34, xend = 22, y = 0.42, yend = 0.42,
+           colour = INK, linewidth = 0.35) +
+  labs(x = "Odds ratio, Motif2 in distal vs proximal peaks (log scale)", y = NULL,
+       title = "Distal enrichment within GC-content quartiles") +
+  coord_cartesian(clip = "off", ylim = c(0.75, 5.3)) +
+  th_house() +
+  theme(plot.title = element_text(size = BASE, face = "bold"),
+        axis.line.x = element_blank())
+
+## nested models: does the distance coefficient survive composition covariates?
+nest <- data.frame(
+  model = c("distance only", "+ AT content", "+ AT + width + CME", "+ CME", "+ CME + enhancer"),
+  beta  = c(summary(t4$at_absorb$b0)$coefficients["log10d","Estimate"],
+            summary(t4$at_absorb$b1)$coefficients["log10d","Estimate"],
+            summary(t4$at_absorb$b2)$coefficients["log10d","Estimate"],
+            t4$cont$beta_log10d[2], t4$cont$beta_log10d[3]),
+  se    = c(summary(t4$at_absorb$b0)$coefficients["log10d","Std. Error"],
+            summary(t4$at_absorb$b1)$coefficients["log10d","Std. Error"],
+            summary(t4$at_absorb$b2)$coefficients["log10d","Std. Error"],
+            t4$cont$se[2], t4$cont$se[3]))
+nest$lo <- nest$beta - 1.96 * nest$se; nest$hi <- nest$beta + 1.96 * nest$se
+nest$model <- factor(nest$model, levels = rev(nest$model))
+nest$base <- nest$model == "distance only"
+
+p319b <- ggplot(nest, aes(beta, model)) +
+  geom_vline(xintercept = 0, colour = INK, linewidth = 0.5) +
+  geom_vline(xintercept = nest$beta[1], linetype = "22", colour = COL_D, linewidth = 0.5) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), orientation = "y", width = 0,
+                linewidth = 0.7, colour = COL_D) +
+  geom_point(aes(size = base), colour = COL_D) +
+  scale_size_manual(values = c(`FALSE` = 2.4, `TRUE` = 3.4), guide = "none") +
+  ## The axis STOPS at the 0.7 tick: the limit 0.72 plus the default 5%
+  ## expansion ran the panel out to 0.756, so a fourteenth of the width sat
+  ## past the last tick with nothing in it (the widest interval ends at 0.63).
+  ## Right expansion 0; the left keeps its 5% so the null rule at 0 does not
+  ## sit on the panel edge.
+  scale_x_continuous(limits = c(0, 0.7), breaks = seq(0, 0.7, 0.1),
+                     expand = expansion(mult = c(0.05, 0))) +
+  coord_cartesian(clip = "off", ylim = c(0.4, 5.5)) +
+  labs(x = expression("Logistic coefficient for  " * log[10] * "(distance to TSS)"),
+       y = NULL) +
+  ## No drawn title: the panel is described in the text where it is
+  ## referenced, so no in-image title is needed.
+  ## The top margin stays at 8 pt so that the y axis line does not run into
+  ## the top edge of the image.
+  th_house() +
+  theme(plot.margin = margin(8, 10, 8, 8))
+
+cat(sprintf("[3.19] AT-absorption LRT p = %.4f  -> \\atLRTP\n", t4$at_absorb$lrt_p))
+
+## Single panel. The GC-quartile / Mantel-Haenszel panel (p319a) is not
+## drawn: Chapter 7 leans only on the covariate-adjusted coefficients, and
+## the stratified result is stated in the Chapter 3 text and in the caption.
+## p319a is retained above because it computes the per-quartile odds ratios
+## that the text cites; it is not saved.
+p319 <- p319b
+## The canvas is 7.7 in wide by 2.95 in high: stopping the axis at 0.7 lets
+## the width be trimmed without enlarging the panel, so at full text width
+## each label renders slightly larger on the page. The height matches the
+## panel without a title.
+ggsave(file.path(OUT, "fig3_22_accessibility_at.png"), p319,
+       width = 7.7, height = 2.95, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig4_7_alpha_subunit_sharing.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.7A - fig4_7_alpha_subunit_sharing.png'}
+
+## ============================================================
+## 4.7 (A) stacked composition bar over 0/1/2/3, positions from geom_rect used for rectangles and labels
+## Style matches Figure 4.3: theme_bw, coord_flip, right-hand legend, no white outline between segments
+## Legend levels already in stacking order, no reverse needed
+## All displayed numbers (segment %/n, >=1-other 87%/n=535, denominator 614) computed from alpha
+## ============================================================
+alpha <- read.csv(file.path(AUD, "alpha_sharing.csv"))
+stopifnot(sum(alpha$n_peaks) == 614L, nrow(alpha) == 4L)
+alpha <- alpha[order(alpha$n_other_alpha), ]
+alpha$pct  <- 100 * alpha$n_peaks / sum(alpha$n_peaks)
+alpha$xmax <- cumsum(alpha$pct)
+alpha$xmin <- alpha$xmax - alpha$pct
+alpha$mid  <- (alpha$xmin + alpha$xmax) / 2
+
+## 0 others: exclusive, emphasis ink. 1/2/3: ordered lightness ramp, darker = more shared.
+## PAL_SEQ rejected: dE 3.8 vs prox_peak, 11.0 vs prox_enh, 12.6 vs Dys/Tgo.
+## Achromatic ramp used instead: E0/99/40 family, within-set dE 26.0, nearest neighbour dE 6.4; PAL_INK$neutral equals PAL_CONTEXT$all_peaks (#BBBBBB), so not reused for sharing levels.
+GREY3 <- c("#E0E0E0", "#999999", "#404040")   # L* 89 / 63 / 27, achromatic
+alpha$fill <- c(EMPH, GREY3)
+## Ink switched on measured lightness, the same rule ink_on_seq() applies.
+Lstar <- as(colorspace::hex2RGB(alpha$fill), "LAB")@coords[, "L"]
+alpha$ink <- ifelse(Lstar >= 52, PAL_INK[["on_mark_dark"]], PAL_INK[["on_mark_light"]])
+## Legend keys, in stacking order (left -> right == top -> bottom in the guide).
+alpha$key <- factor(c("0  (Trh-exclusive)", "1 other", "2 others", "3 others"),
+                    levels = c("0  (Trh-exclusive)", "1 other", "2 others", "3 others"))
+FILLS  <- setNames(alpha$fill, levels(alpha$key))
+shared <- 100 - alpha$pct[alpha$n_other_alpha == 0]
+xb <- alpha$xmin[alpha$n_other_alpha == 1]
+## The denominator (n = 614) is computed from the data and guarded by the stopifnot above.
+ylab1 <- sprintf("Trh/Tgo joint peaks\n(n = %d)", sum(alpha$n_peaks))
+
+p47 <- ggplot(alpha) +
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 1, fill = key)) +
+  geom_text(aes(x = mid, y = 0.62, label = sprintf("%.0f%%", pct), colour = I(ink)),
+            size = BASE / .pt, fontface = "bold") +
+  geom_text(aes(x = mid, y = 0.34, label = sprintf("n = %d", n_peaks), colour = I(ink)),
+            size = ANN / .pt) +
+  ## brace over the shared span, drawn horizontally above the bar
+  annotate("segment", x = xb, xend = 100, y = 1.26, yend = 1.26,
+           colour = INK, linewidth = 0.4) +
+  annotate("segment", x = c(xb, 100), xend = c(xb, 100),
+           y = 1.26, yend = 1.17, colour = INK, linewidth = 0.4) +
+  annotate("text", x = (xb + 100) / 2, y = 1.34,
+           label = sprintf("bound by \u22651 other \u03b1-subunit:  %.0f%%  (n = %d)",
+                           shared, sum(alpha$n_peaks) - alpha$n_peaks[1]),
+           size = ANN / .pt, colour = INK, fontface = "bold", vjust = 0) +
+  scale_fill_manual(values = FILLS) +
+  scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 25)) +
+  scale_y_continuous(limits = c(-0.16, 1.56), breaks = 0.5, labels = ylab1) +
+  labs(x = "Percentage(%)", y = NULL, fill = "Other \u03b1-subunits",
+       title = "\u03b1-Subunit sharing") +
+  ## Figure 4.3's theme, with every colour pulled back to a PAL_* role.
+  theme_bw(base_size = BASE) +
+  theme(
+    panel.border       = element_rect(colour = INK, fill = NA, linewidth = 0.5),
+    panel.grid.major   = element_line(colour = PAL_INK[["gridline"]], linewidth = 0.3),
+    panel.grid.minor   = element_line(colour = PAL_INK[["gridline"]], linewidth = 0.2),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    axis.text          = element_text(colour = ANNC, size = TICK),
+    axis.ticks         = element_line(colour = INK, linewidth = 0.35),
+    axis.title.x       = element_text(size = BASE, margin = margin(t = 6)),
+    plot.title         = element_text(size = BASE + 2, hjust = 0,
+                                      margin = margin(b = 6)),
+    legend.title       = element_text(size = BASE),
+    legend.text        = element_text(size = ANN),
+    legend.key.size    = unit(12, "pt"),
+    legend.background  = element_blank(),
+    plot.margin        = margin(8, 10, 8, 8)
+  )
+ggsave(file.path(OUT, "fig4_7_alpha_subunit_sharing.png"), p47,
+       width = 7.8, height = 3.2, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig4_7_pairwise_overlap_matrix.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.7B - fig4_7_pairwise_overlap_matrix.png'}
+
+## ============================================================
+## 4.7 (B) 4x4 containment heatmap -> directional dumbbells, one per pair
+## Panel B is fig4_7_pairwise_overlap_matrix.png, the directional containment matrix.
+## fig4_7_B_*_perm.png histograms belong to Figure 4.6 and are not touched here.
+## Six unordered pairs, rows ordered by size ratio; shows co-occupancy does not attribute a peak to one heterodimer.
+## ============================================================
+pw <- read.csv(file.path(AUD, "refset_pairwise_5000.csv"), stringsAsFactors = FALSE)
+stopifnot(nrow(pw) == 16L)
+sp <- read.csv(file.path(AX4, "table4_specificity_disjoint.csv"), stringsAsFactors = FALSE)
+NPK <- setNames(sp$N_peaks[match(c("Trh/Tgo","Sim/Tgo","Dys/Tgo","Sima/Tgo"), sp$Set)],
+                c("Trh","Sim","Dys","Sima"))
+stopifnot(!any(is.na(NPK)), NPK[["Trh"]] == 614L)
+
+off <- pw[pw$row != pw$col & !is.na(pw$obs), ]
+stopifnot(nrow(off) == 12L)
+fold_rng <- range(off$fold)
+cat(sprintf("[4.7B] fold range for the caption: %.0f-%.0f\n", fold_rng[1], fold_rng[2]))
+
+## one row per unordered pair; "a" is always the MORE contained direction
+prs <- t(combn(names(NPK), 2))
+rows <- do.call(rbind, lapply(seq_len(nrow(prs)), function(i) {
+  x <- prs[i, 1]; y <- prs[i, 2]
+  v1 <- off$obs[off$row == x & off$col == y]   # % of x's peaks inside a y peak
+  v2 <- off$obs[off$row == y & off$col == x]
+  stopifnot(length(v1) == 1L, length(v2) == 1L)
+  hi <- if (v1 >= v2) x else y; lo <- if (v1 >= v2) y else x
+  data.frame(hi = hi, lo = lo,
+             hi_val = max(v1, v2), lo_val = min(v1, v2),
+             n_hi = NPK[[hi]], n_lo = NPK[[lo]],
+             ratio = max(NPK[[x]], NPK[[y]]) / min(NPK[[x]], NPK[[y]]))
+}))
+## The panel's explanatory claim: in every pair it is the smaller peak set
+## that is the more contained one.
+stopifnot(all(rows$n_hi < rows$n_lo))
+
+rows$gap <- rows$hi_val - rows$lo_val
+rows <- rows[order(rows$ratio), ]
+## "vs" not U+2194: the arrow has no glyph in the default PNG device font and
+## rendered as a tofu box. Anything outside Latin-1 needs a font check first.
+rows$lab <- sprintf("%s/Tgo vs %s/Tgo\n(%d vs %d peaks)",
+                    rows$hi, rows$lo, rows$n_hi, rows$n_lo)
+rows$lab <- factor(rows$lab, levels = rows$lab)
+
+lng <- rbind(
+  data.frame(lab = rows$lab, who = rows$hi, val = rows$hi_val,
+             other = rows$lo, side = "hi"),
+  data.frame(lab = rows$lab, who = rows$lo, val = rows$lo_val,
+             other = rows$hi, side = "lo"))
+lng$col <- unname(PAL_HETERO[paste0(lng$who, "/Tgo")])
+stopifnot(!any(is.na(lng$col)))
+lng$txt <- sprintf("%s %.0f%%", lng$who, lng$val)
+
+p47b <- ggplot(rows) +
+  geom_segment(aes(x = lo_val, xend = hi_val, y = lab, yend = lab),
+               colour = NEUT, linewidth = 1.1) +
+  geom_point(data = lng, aes(val, lab, colour = I(col)), size = 3.2) +
+  geom_text(data = subset(lng, side == "hi"), aes(val, lab, label = txt),
+            hjust = -0.16, size = ANN / .pt, colour = INK) +
+  geom_text(data = subset(lng, side == "lo"), aes(val, lab, label = txt),
+            hjust = 1.16, size = ANN / .pt, colour = ANNC) +
+  ## The x rule is drawn with the axis spanning only the data range, 0-100,
+  ## with the space beyond used as a label gutter. It meets the y axis
+  ## (drawn by the theme's axis.line.y, at the panel's left edge) at a
+  ## corner: the axis limit is set to 0 and the rule sits on the panel
+  ## bottom (ylim[1] = 0.75, which is also where the x ticks hang from), so
+  ## rule, ticks and y axis share one corner. No second segment is drawn for
+  ## the y axis, since axis.line.y already draws that line.
+  annotate("segment", x = 0, xend = 100, y = 0.75, yend = 0.75,
+           colour = INK, linewidth = 0.35) +
+  ## The colour encoding (coloured by the set whose peaks are counted) is
+  ## stated in the figure caption rather than in on-plot text.
+  ## lower limit is 0: nothing is drawn left of zero (the leftmost label,
+  ## "Dys 23%", starts near 12), so the axis starts at the data rather than
+  ## being padded out to the left of the row labels.
+  scale_x_continuous(limits = c(0, 112), breaks = seq(0, 100, 25),
+                     expand = expansion(mult = c(0, 0))) +
+  coord_cartesian(clip = "off", ylim = c(0.75, 6.6)) +
+  labs(x = "Peaks of the coloured set that lie within a peak of its partner (%)",
+       y = NULL) +
+  th_house() +
+  theme(axis.line.x = element_blank(),
+        axis.text.y = element_text(lineheight = 1.0),
+        plot.margin = margin(8, 12, 8, 8))
+ggsave(file.path(OUT, "fig4_7_pairwise_overlap_matrix.png"), p47b,
+       width = 8.0, height = 4.1, dpi = 300, bg = "white")
+```
+
+## Figure: fig4_8_enhancer_perm_Z.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.8 - fig4_8_enhancer_perm_Z.png'}
+
+## ============================================================
+## 4.8  12 grouped vertical Z-bars  ->  FACETED DIVERGING LOLLIPOP + null band
+## ============================================================
+e4 <- read.csv(file.path(AX4, "perm_enhancers_summary.csv"))
+e4$Het <- sub(" .*$", "", e4$Context)
+e4$Ctx <- sub("^\\S+ ", "", e4$Context)
+e4$Het <- factor(e4$Het,
+                 levels = rev(c("Trh/Tgo", "Sim/Tgo", "Dys/Tgo", "Sima/Tgo")))
+ctxlab <- c(all = "All peaks", promoter = "Promoter-proximal", distal = "Distal (>1 kb)")
+e4$Ctx <- factor(ctxlab[e4$Ctx], levels = unname(ctxlab))
+stopifnot(!anyNA(e4$Het), !anyNA(e4$Ctx), nrow(e4) == 12L)
+fill48 <- PAL_CONTEXT_LABELS[c("all peaks", "promoter-proximal", "distal (>1 kb)")]
+names(fill48) <- unname(ctxlab)
+e4$note <- sprintf("%d/%.0f", e4$Observed, e4$Null_mean)
+
+p48 <- ggplot(e4, aes(Z_score, Het)) +
+  annotate("rect", xmin = -1.96, xmax = 1.96, ymin = -Inf, ymax = Inf,
+           fill = PAL_INK[["band"]]) +
+  geom_vline(xintercept = 0, colour = ANNC, linewidth = 0.4) +
+  geom_vline(xintercept = c(-1.96, 1.96), linetype = "22",
+             colour = PAL_INK[["threshold"]], linewidth = 0.4) +
+  geom_segment(aes(x = 0, xend = Z_score, yend = Het, colour = Ctx),
+               linewidth = 0.8) +
+  geom_point(aes(colour = Ctx), size = 2.8) +
+  geom_text(aes(label = note, hjust = ifelse(Z_score >= 0, -0.28, 1.28)),
+            size = ANN / .pt, colour = ANNC) +
+  facet_wrap(~ Ctx, nrow = 1) +
+  scale_colour_manual(values = fill48, guide = "none") +
+  ## Widened from c(-21, 23): the polish pass's tick-length and margin changes
+  ## re-consumed the label gutter and "220/99" lost its final digit. The label
+  ## is data-positioned (hjust off the point), so the panel must carry the room.
+  scale_x_continuous(limits = c(-24, 27), breaks = seq(-15, 15, 5)) +
+  labs(x = "Enhancer-overlap Z-score  (observed \u2212 null mean) / null SD",
+       y = NULL) +
+  th_house()
+ggsave(file.path(OUT, "fig4_8_enhancer_perm_Z.png"), p48,
+       width = 8.4, height = 3.8, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig4_9_S_specificity_reanalysis.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.9 - fig4_9_S_specificity_reanalysis.png'}
+
+## ============================================================
+## 4.9  Two panels for Chapter 4 figure (A)+(B).
+## (A) forest plot of within-row odds ratios, heterodimers vs non-bHLH-PAS controls.
+## (B) peak-number-matched re-test: sets downsampled to common n, 500 draws, mean occupancy per gene column; paired slope plot of within-heterodimer tracheal vs CNS comparison with +-1 SD of the 500 draws. Sim/Tgo CNS lead exceeds draw-to-draw noise; tracheal ordering does not.
+## ============================================================
+sp <- read.csv(file.path(AX4, "table4_specificity_disjoint.csv"))
+sp$grp <- ifelse(sp$Class == "bHLH-PAS/Tgo", "bHLH-PAS\u2013Tgo heterodimers",
+                 "non-bHLH-PAS controls")
+sp$grp <- factor(sp$grp, levels = c("bHLH-PAS\u2013Tgo heterodimers", "non-bHLH-PAS controls"))
+sp$Set <- factor(sp$Set, levels = rev(sp$Set))
+sp$col <- ifelse(sp$Class == "bHLH-PAS/Tgo",
+                 PAL_HETERO[match(as.character(sp$Set), names(PAL_HETERO))], NEUT)
+sp$col[is.na(sp$col)] <- NEUT
+## Statistical symbols are italic, which requires plotmath, and plotmath
+## cannot set a non-ASCII glyph inside a quoted string: the en dash of the CI
+## comes out as a literal character rather than the symbol. So the two cannot
+## share one parsed label. The CI keeps its en dash as plain text on the bold
+## line, and p moves down to the grey line, which is ASCII throughout and is
+## therefore parsed. thesis_p_expr() also gives p the standard scientific form
+## instead of sprintf's "1.0e-05".
+sp$note <- sprintf("%.2f [%.2f\u2013%.2f]", sp$OR_TSG_over_CNS, sp$CI_lo, sp$CI_hi)
+sp$nlab <- sprintf("%s*';'~~italic(n)==%d~'peaks;'~~'%.1f%% vs %.1f%%'",
+                   vapply(sp$p, thesis_p_expr, character(1)),
+                   sp$N_peaks, sp$pct_TSGonly, sp$pct_CNSonly)
+
+## Rib's interval runs to 2.31, far enough right that its upper whisker
+## crosses the right-hand statistics text, which is right-aligned at x=3.05.
+## Every other row's CI stops short of the text block, so only this one row is
+## dropped by about a line-height; a global shift would misalign the other six
+## from their points for no reason.
+RIB_DROP  <- as.character(sp$Set) == "Rib"
+sp$vj_note <- ifelse(RIB_DROP, 1.7, 0.5)   # or line: 0.5 = centred on the row
+sp$vj_n    <- ifelse(RIB_DROP, 3.4, 2.2)   # n line: one line below the or line
+
+pA <- ggplot(sp, aes(OR_TSG_over_CNS, Set)) +
+  ## DASHED: a solid line carrying the same weight and colour as the
+  ## y-axis line and the facet strip edges would read as a second axis
+  ## rather than as the null. Dashed is the idiom for a reference
+  ## level in this set (as in the q_0.95 rule and the E = 1 rule).
+  geom_vline(xintercept = 1, colour = INK, linewidth = 0.5, linetype = 2) +
+  geom_errorbar(aes(xmin = CI_lo, xmax = CI_hi, colour = I(col)), orientation = "y",
+                width = 0, linewidth = 0.7) +
+  ## black-outlined point, matching the black-outlined bars
+  geom_point(aes(fill = I(col)), shape = 21, colour = "black", stroke = 0.4,
+             size = 2.9) +
+  geom_text(aes(x = 3.05, label = note, vjust = vj_note), hjust = 1,
+            size = ANN / .pt, colour = INK, fontface = "bold") +
+  geom_text(aes(x = 3.05, label = nlab, vjust = vj_n), hjust = 1, parse = TRUE,
+            size = (ANN - 1.2) / .pt, colour = ANNC) +
+  facet_wrap(~ grp, ncol = 1, scales = "free_y", strip.position = "top") +
+  ## The n-line is drawn at vjust 2.2 below its or line, so the bottom row of
+  ## each facet needs a gutter or that line is cut by the panel edge (it was:
+  ## Sima/Tgo lost "n=296 peaks; 2.8% vs 3.9%" entirely).
+  ## Bottom gutter widened 0.85 -> 1.15 to clear Rib's dropped n-line.
+  scale_y_discrete(expand = expansion(add = c(1.15, 0.55))) +
+  ## lower limit 0.20 -> 0.235 halves the band between the y axis and the 0.25
+  ## tick (0.156 -> 0.083 log10 units of panel). 0.235 is the floor: the lowest
+  ## CI bound in the table is 0.245 (Sim/Tgo), which must not touch the edge.
+  scale_x_log10(limits = c(0.235, 3.1), breaks = c(0.25, 0.5, 1, 2)) +
+  labs(x = "Odds ratio, tracheal+SG-exclusive / CNS+midline-exclusive genes (log scale)",
+       y = NULL) +
+  th_house() +
+  ## Rotated left-side strips clipped at every margin tried; horizontal strips
+  ## above each block cannot clip and read faster.
+  ## BOXED strips (Fig 3.6 / 3.12 / 5.6); panel.spacing kept at 0.45 cm because
+  ## these two facets are STACKED, where th_barhouse()'s 1 cm gutter only costs
+  ## height.
+  th_barhouse() +
+  theme(strip.text = element_text(face = "bold", size = BASE - 1, hjust = 0.5,
+                                  margin = margin(3, 3, 3, 3)),
+        panel.spacing = unit(0.45, "cm"),
+        plot.margin = margin(8, 10, 8, 8))
+
+## ---- (B) peak-number-matched re-test ---------------------------------------
+mt <- read.csv(file.path(AX4, "table4_peakmatched_ranking.csv"))
+stopifnot(nrow(mt) == 4L,
+          all(c("TSGonly_pct","CNSonly_pct","TSG_sd","CNS_sd") %in% names(mt)))
+ordH <- c("Trh/Tgo", "Sim/Tgo", "Dys/Tgo", "Sima/Tgo")
+mt <- mt[match(ordH, mt$Heterodimer), ]
+match_n <- min(mt$N_peaks)
+
+long <- rbind(
+  data.frame(Het = mt$Heterodimer, col = "Tracheal + SG",
+             pct = mt$TSGonly_pct, sd = mt$TSG_sd),
+  data.frame(Het = mt$Heterodimer, col = "CNS + midline",
+             pct = mt$CNSonly_pct, sd = mt$CNS_sd))
+long$col <- factor(long$col, levels = c("Tracheal + SG", "CNS + midline"))
+long$Het <- factor(long$Het, levels = ordH)
+long$hcol <- unname(PAL_HETERO[as.character(long$Het)])
+
+## rank label per column: 1 = highest occupancy
+long$rk <- ave(-long$pct, long$col, FUN = rank)
+lead <- long[long$rk == 1, ]
+
+pB <- ggplot(long, aes(col, pct, group = Het)) +
+  geom_line(aes(colour = I(hcol)), linewidth = 0.8) +
+  geom_errorbar(aes(ymin = pct - sd, ymax = pct + sd, colour = I(hcol)),
+                width = 0.055, linewidth = 0.5) +
+  geom_point(aes(fill = I(hcol)), shape = 21, colour = "black", stroke = 0.4,
+             size = 3.0) +
+  ## Both values carried on the ONE right-hand label. Printing the tracheal
+  ## value beside its own point put four labels inside 0.55 pp of each other
+  ## (2.75 / 2.64 / 2.29 / 2.20) and they overprinted.
+  geom_text(data = data.frame(col = factor("CNS + midline", levels = levels(long$col)),
+                              Het = factor(ordH, levels = ordH),
+                              pct = mt$CNSonly_pct, hcol = unname(PAL_HETERO[ordH]),
+                              lab = sprintf("%s  %.2f%% \u2192 %.2f%%",
+                                            ordH, mt$TSGonly_pct, mt$CNSonly_pct)),
+            aes(label = lab, colour = I(hcol)), hjust = -0.08, size = ANN / .pt,
+            fontface = "bold") +
+  ## mark the leader of each column: this is the panel's actual point
+  geom_point(data = lead, aes(colour = I(hcol)), shape = 21, size = 6,
+             stroke = 0.7, fill = NA) +
+  ## match_n is still computed and printed below because the value it holds
+  ## is recorded in results/reported_values.tsv.
+  ## Right padding is 0.55: this exists only to hold the in-panel
+  ## "Sim/Tgo 2.20% -> 5.04%" labels.
+  scale_x_discrete(expand = expansion(add = c(0.30, 0.55))) +
+  scale_y_continuous(limits = c(0, max(long$pct) * 1.16),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(x = NULL, y = "Column genes with a peak\nwithin 1 kb of the TSS (%)") +
+  th_house() + th_barhouse() +
+  ## The two-line y title sat 6 pt off its own tick labels (th_house's default);
+  ## 1 pt closes that.
+  theme(axis.title.y = element_text(size = BASE - 1.5,
+                                    lineheight = 1.0, margin = margin(r = 1)))
+
+## Panel A height ratio set to 1.18 (canvas 7.8 in) to space heterodimer rows.
+## Panel B built as its own row: plot_spacer() either side centres it at 78%
+## width; empty left spacer carries tag "B", pB's own tag blanked.
+letter_cell <- wrap_elements(full = grid::rectGrob(gp = grid::gpar(col = NA, fill = NA)))
+row_b <- (letter_cell | (pB + theme(plot.tag = element_blank())) | plot_spacer()) +
+  plot_layout(widths = c(0.11, 0.78, 0.11))
+p49 <- (pA / row_b) + plot_layout(heights = c(1.18, 0.96)) +
+  plot_annotation(tag_levels = "A")
+ggsave(file.path(OUT, "fig4_9_S_specificity_reanalysis.png"), p49,
+       width = 9.0, height = 7.8, dpi = 300, bg = "white")
+cat(sprintf("[4.9] matched n = %d peaks -> \\specMatchedN; column leaders: %s\n",
+            match_n, paste(sprintf("%s=%s", lead$col, lead$Het), collapse = ", ")))
+```
+
+## Figure: fig4_10_motif2_across_heterodimers.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.10 - fig4_10_motif2_across_heterodimers.png'}
+
+## ============================================================
+## 4.10  Four bars  ->  PROPORTION WITH BINOMIAL 95% CI AND A POOLED RATE
+##       Four bars of similar height do not say "equivalent"; four intervals
+##       overlapping a common rate do. Same inferential upgrade as Fig 4.11.
+## ============================================================
+m410 <- read.csv(file.path(AX4, "table4_10_motif2_occurrence.csv"))
+stopifnot(nrow(m410) == 4L)
+ci <- t(mapply(function(a, n) binom.test(a, n)$conf.int,
+               m410$Motif2_positive, m410$Total_peaks))
+m410$lo <- 100 * ci[, 1]; m410$hi <- 100 * ci[, 2]
+pooled <- 100 * sum(m410$Motif2_positive) / sum(m410$Total_peaks)
+m410$Heterodimer <- factor(m410$Heterodimer,
+  levels = rev(c("Trh/Tgo", "Sim/Tgo", "Dys/Tgo", "Sima/Tgo")))
+## label pair (Fig 3.6 / 3.12): bold value over a plain (n/N) sub-line
+m410$note <- sprintf("%.1f%%", m410$Motif2_fraction)
+m410$nlab <- sprintf("(%d/%d)", m410$Motif2_positive, m410$Total_peaks)
+chi <- suppressWarnings(chisq.test(cbind(m410$Motif2_positive,
+                                         m410$Total_peaks - m410$Motif2_positive)))
+
+p410 <- ggplot(m410, aes(Motif2_fraction, Heterodimer)) +
+  annotate("rect", xmin = pooled - 3, xmax = pooled + 3, ymin = -Inf, ymax = Inf,
+           fill = PAL_INK[["band"]]) +
+  geom_vline(xintercept = pooled, colour = INK, linewidth = 0.5) +
+  geom_errorbar(aes(xmin = lo, xmax = hi,
+                    colour = I(unname(PAL_HETERO[as.character(Heterodimer)]))),
+                orientation = "y", width = 0, linewidth = 0.8) +
+  geom_point(aes(fill = I(unname(PAL_HETERO[as.character(Heterodimer)]))),
+             shape = 21, colour = "black", stroke = 0.4, size = 3.1) +
+  geom_text(aes(x = 45, label = note), hjust = 1, vjust = -0.10,
+            size = ANN / .pt, colour = INK, fontface = "bold") +
+  geom_text(aes(x = 45, label = nlab), hjust = 1, vjust = 1.35,
+            size = (ANN - 1.2) / .pt, colour = ANNC) +
+  annotate("text", x = pooled + 3.4, y = 4.62, vjust = 0, hjust = 0,
+           label = sprintf("pooled %.1f%%  (\u00b13 pp band)", pooled),
+           size = (ANN - 0.5) / .pt, colour = ANNC) +
+  ## The (n/N) sub-line sits in the empty bottom-left corner (no CI reaches
+  ## below 26.6), using thesis_bar()'s italic ANNC treatment for a panel-level
+  ## statistic.
+  ## The label is built with plotmath so that only p is italic, and chi^2 is
+  ## set from the symbol font, plotmath cannot render the literal chi-squared
+  ## symbol inside a string.
+  annotate("text", x = 20, y = 0.62, hjust = 0, vjust = 0, parse = TRUE,
+           label = sprintf("'Heterodimer comparison:'~chi^2~'test'~~%s",
+                           thesis_p_expr(chi$p.value)),
+           size = ANN / .pt, colour = ANNC) +
+  scale_x_continuous(limits = c(20, 45), breaks = seq(20, 45, 5)) +
+  coord_cartesian(clip = "off", ylim = c(0.7, 4.45)) +
+  ## A Motif2-positive peak is defined by FIMO q < 0.05, not p < 1e-4 (the
+  ## attribution convention), so the call rule is stated on the axis title
+  ## itself rather than only in the caption, keeping the two thresholds
+  ## distinct across figures.
+  ## The axis title uses plotmath so the FIMO threshold's q is italic, as
+  ## for every other statistical symbol on the page.
+  ## The two "%" are inside quoted strings, which plotmath passes through.
+  labs(x = expression("Peaks containing Motif2 (%), FIMO"~italic(q) < 0.05 *
+                        ", binomial 95% CI"),
+       y = NULL) +
+  th_house() + th_barhouse() + theme(plot.margin = margin(24, 10, 8, 8))
+ggsave(file.path(OUT, "fig4_10_motif2_across_heterodimers.png"), p410,
+       width = 8.0, height = 3.4, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig4_10_motif2_pooled_equivalence.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.11 - fig4_10_motif2_pooled_equivalence.png'}
+
+## ============================================================
+## 4.11  Two bar panels  ->  ONE FOREST PLOT (or + 95% CI) with a powered
+##       equivalence band. Turns "no difference" from absence-of-evidence into
+##       a bounded, powered statement.
+## ============================================================
+pool   <- read.csv(file.path(AUD, "refset_motif2_pooled.csv"))
+perhet <- read.csv(file.path(AUD, "refset_motif2_perhet.csv"))
+ordH <- c("Trh", "Sim", "Dys", "Sima")
+ph <- perhet[match(ordH, perhet$heterodimer), ]
+ph$n_shared <- ph$n_peaks - ph$n_exclusive
+mk <- function(a, na, c_, nc) matrix(c(a, na - a, c_, nc - c_), 2, byrow = TRUE)
+rows <- list()
+pe <- pool[pool$class == "exclusive", ]; ps <- pool[pool$class == "shared", ]
+rows[["Pooled\n(all four)"]] <- mk(pe$n_motif2, pe$n, ps$n_motif2, ps$n)
+for (i in seq_len(nrow(ph))) {
+  a  <- round(ph$motif2_pct_exclusive[i] / 100 * ph$n_exclusive[i])
+  c_ <- round(ph$motif2_pct_shared[i]    / 100 * ph$n_shared[i])
+  rows[[paste0(ph$heterodimer[i], "/Tgo")]] <- mk(a, ph$n_exclusive[i], c_, ph$n_shared[i])
+}
+f411 <- do.call(rbind, lapply(names(rows), function(nm) {
+  ft <- fisher.test(rows[[nm]])
+  data.frame(row = nm, or = unname(ft$estimate),
+             lo = ft$conf.int[1], hi = ft$conf.int[2], p = ft$p.value,
+             n_excl = sum(rows[[nm]][1, ]), n_shar = sum(rows[[nm]][2, ]))
+}))
+f411$power <- c(NA, ph$power_vs_1.5x)
+f411$row <- factor(f411$row, levels = rev(f411$row))
+f411$pooled <- f411$row == "Pooled\n(all four)"
+## As Fig 4.8: the CI keeps its en dash as plain text on the bold line, and p
+## moves to the grey line, which is ASCII and can be parsed so that p is italic.
+f411$note <- sprintf("%.2f [%.2f\u2013%.2f]", f411$or, f411$lo, f411$hi)
+f411$pex  <- vapply(f411$p, thesis_p_expr, character(1))
+f411$nlab <- ifelse(is.na(f411$power),
+                    sprintf("%s*';'~~italic(n)==%d~'vs'~%d",
+                            f411$pex, f411$n_excl, f411$n_shar),
+                    sprintf("%s*';'~~italic(n)==%d~'vs'~%d*';'~~'power %.0f%%'",
+                            f411$pex, f411$n_excl, f411$n_shar, f411$power))
+
+p411_forest <- ggplot(f411, aes(or, row)) +
+  annotate("rect", xmin = 1/1.5, xmax = 1.5, ymin = -Inf, ymax = Inf,
+           fill = PAL_INK[["band"]]) +
+  ## The band label belongs OVER the band, so it stays centred on x = 1 and the
+  ## null line stops below it instead: drawn -Inf..Inf by geom_vline, the line
+  ## ran straight through the words and read as a strikethrough. The endpoints
+  ## are the outer ROW LEVELS, not numbers, a numeric y in the first layer
+  ## makes ggplot train a continuous y scale, and the factor rows then error
+  ## out ("Discrete value supplied to a continuous scale").
+  annotate("segment", x = 1, xend = 1,
+           y = levels(f411$row)[1], yend = levels(f411$row)[nlevels(f411$row)],
+           colour = INK, linewidth = 0.5) +
+  geom_errorbar(aes(xmin = lo, xmax = hi), orientation = "y", width = 0,
+                linewidth = 0.7, colour = M2) +
+  ## shape 23 = the filled diamond's outlined twin, so the mark carries a
+  ## black outline (shape 18 has none)
+  geom_point(aes(size = pooled), fill = M2, colour = "black", stroke = 0.4,
+             shape = 23) +
+  annotate("text", x = 1, y = 5.62, label = "equivalence band (\u00b11.5\u00d7)",
+           size = (ANN - 1) / .pt, colour = ANNC, vjust = 0) +
+  scale_size_manual(values = c(`FALSE` = 2.7, `TRUE` = 4.0), guide = "none") +
+  scale_x_log10(limits = c(0.19, 5.6), breaks = c(0.25, 0.5, 0.667, 1, 1.5, 2, 4),
+                labels = c("0.25", "0.5", "0.67", "1", "1.5", "2", "4")) +
+  ## every CI must lie inside the panel: a limit that clips a whisker deletes it
+  ## silently rather than flagging it (ggplot drops the out-of-bounds row).
+  {stopifnot(min(f411$lo) > 0.19, max(f411$hi) < 5.6); NULL} +
+  coord_cartesian(clip = "off", ylim = c(0.6, 5.9)) +
+  labs(x = "Odds ratio for Motif2 carriage, exclusive vs. shared peaks (log scale)",
+       y = NULL) +
+  ## Black axis line and no gridlines. Row guides are not used here;
+  ## the adjacent numeric panel carries row alignment on its own.
+  th_house() + th_barhouse()
+
+## Numeric column as its own panel. Putting the numbers inside the forest panel
+## means a wide CI (Sima/Tgo, 0.23-4.15) can draw its whisker straight through its
+## own label, because the label position is fixed while the whisker length is
+## data-dependent. A separate panel is the standard forest-plot layout and makes
+## the collision structurally impossible.
+p411_tab <- ggplot(f411, aes(y = row)) +
+  geom_text(aes(x = 0, label = note), hjust = 0, size = ANN / .pt, colour = INK,
+            fontface = "bold") +
+  geom_text(aes(x = 0, label = nlab), hjust = 0, vjust = 2.1, parse = TRUE,
+            size = (ANN - 1.2) / .pt, colour = ANNC) +
+  scale_x_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0))) +
+  coord_cartesian(clip = "off", ylim = c(0.6, 5.9)) +
+  labs(x = NULL, y = NULL) +
+  theme_void(base_size = BASE) +
+  theme(axis.title.x = element_text(size = BASE - 0.5, colour = "white"),
+        plot.margin = margin(8, 4, 8, 0))
+
+## The numeric column's panel is set wider than its text needs: the longest
+## line ("p = 0.507; n = 363 vs 507; power 94%") fills roughly two thirds of a
+## 0.62 width, leaving dead space at the right edge of the figure. A width of
+## 0.42 fits the text, and the freed width goes to the forest plot, so the
+## content spans the canvas evenly instead of being left-heavy with a gap.
+p411 <- (p411_forest | p411_tab) + plot_layout(widths = c(1, 0.42))
+ggsave(file.path(OUT, "fig4_10_motif2_pooled_equivalence.png"), p411,
+       width = 9.0, height = 3.6, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig4_12_motif2_attribution.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.14 - fig4_12_motif2_attribution.png'}
+
+M <- PROJECT_DIR
+pk <- read.csv(file.path(M,"data/chapter4/table4_ctrl_motif2_frequency.csv"), check.names=FALSE)
+rownames(pk) <- pk$Factor
+t <- read.csv(file.path(M,"data/motif2_attribution/pooled_attribution_tests.csv"))
+p <- t[t$comparison=="enhancers bound by pooled vs unbound",]
+n <- read.csv(file.path(M,"data/motif2_attribution/nonenh_baseline.csv"))
+gcf <- function(f){ L <- readLines(f, warn=FALSE); s <- paste(L[!grepl("^>",L)], collapse="")
+  nchar(gsub("[^GCgc]","",s))/nchar(s) }
+FA <- file.path(M,"data/ctrl_tf/fimo/input_fastas")
+GC <- c("Trh/Tgo (ref)"=NA,
+        TWI=gcf(file.path(FA,"TWI_enh_summits_200bp.fa")),
+        VVL=gcf(file.path(FA,"VVL_enh_summits_200bp.fa")),
+        RIB=gcf(file.path(FA,"RIB_enh_summits_200bp.fa")),
+        DA=gcf(file.path(FA,"DA_enh_summits_200bp.fa")),
+        "Matched non-Tgo BG"=gcf(file.path(FA,"matched_bg_200bp.fa")))
+GC["Trh/Tgo (ref)"] <- NA
+enhgc <- gcf(file.path(M,"data/motif2_attribution/enh_201bp.fa"))
+
+## KEY: both families have essentially the same internal baseline
+bg_a <- pk["Matched non-Tgo BG","N_Motif2_pos"]; bg_n <- pk["Matched non-Tgo BG","N_scanned"]
+
+rows <- list()
+add <- function(lab, a, na, b, nb, fam, gc=NA){
+  ft <- fisher.test(matrix(c(a,na-a,b,nb-b),2,byrow=TRUE))
+  rows[[length(rows)+1]] <<- data.frame(label=lab, a=a, n=na, pct=100*a/na,
+    or=unname(ft$estimate), lo=ft$conf.int[1], hi=ft$conf.int[2], p=ft$p.value,
+    family=fam, gc=100*gc, stringsAsFactors=FALSE) }
+## DA's row is read from table4_ctrl_motif2_frequency.csv (written by
+## ch4_ctrl_motif2_panel.R as six rows) via the pk object, and is placed
+## after VVL, in descending carriage order.
+for (f in c("Trh/Tgo (ref)","VVL","DA","RIB","TWI")) {
+  add(f, pk[f,"N_Motif2_pos"], pk[f,"N_scanned"], bg_a, bg_n,
+      "Factor peaks, vs GC/length-matched background", GC[[f]])
+}
+add("Enhancers bound by a heterodimer", p$a, p$n_a, p$b, p$n_b,
+    "Enhancer catalogue, vs unbound enhancers", enhgc)
+add("Enhancers bound by none", p$b, p$n_b, n$with_motif2, n$n,
+    "Enhancer catalogue, vs unbound enhancers", enhgc)
+d <- do.call(rbind, rows)
+d$or <- round(d$or,2); d$lo <- round(d$lo,2); d$hi <- round(d$hi,2)
+
+## Check: the "Enhancers bound by a heterodimer" row is the one the Chapter 4
+## text quotes (attrPooledOR / attrPooledCIlo / attrPooledCIhi), with the exact
+## fisher.test interval that accompanies the exact p. The values stated in the
+## text are the assertion targets; a value recorded in
+## results/reported_values.tsv takes precedence.
+.stated_num <- function(nm, stated) {
+  v <- suppressWarnings(as.numeric(read_value(nm)))
+  if (is.na(v)) stated else v
+}
+.pl <- d[d$label == "Enhancers bound by a heterodimer", ]
+stopifnot(nrow(.pl) == 1L,
+          abs(.stated_num("attrPooledOR",   1.62) - .pl$or) < 0.005,
+          abs(.stated_num("attrPooledCIlo", 1.17) - .pl$lo) < 0.005,
+          abs(.stated_num("attrPooledCIhi", 2.20) - .pl$hi) < 0.005)
+
+## ------------------------------------------------------------
+## VARIANT B, odds ratio against each row's own baseline
+##   Every row becomes a ratio within its own comparison, so the number is
+##   dimensionless. It works here because the two families share a baseline:
+##   the GC/length-matched background is 8.1% and unbound enhancers are 8.0%.
+##   Reference lines are drawn at 1 (no enrichment over own baseline).
+## ------------------------------------------------------------
+b <- d
+b$label[b$label == "Trh/Tgo (ref)"] <- "Trh/Tgo peaks"
+b$label[b$label == "VVL"] <- "Vvl peaks  (POU-HD)"
+b$label[b$label == "DA"]  <- "Da peaks (bHLH class I,\nno PAS)"
+b$label[b$label == "RIB"] <- "Rib peaks  (BTB-ZF)"
+b$label[b$label == "TWI"] <- "Twi peaks (bHLH class II,\nno PAS)"
+## DISPLAY labels only, broken after "Enhancers": these two rows are the
+## longest in the figure and set the width of the y-axis text column.
+## The analysis labels in `d` keep their one-line form, so the guards above
+## and the role grepl() below still match.
+b$label[b$label == "Enhancers bound by a heterodimer"] <- "Enhancers\nbound by a heterodimer"
+b$label[b$label == "Enhancers bound by none"] <- "Enhancers\nbound by none"
+b$role <- ifelse(grepl("Trh/Tgo", b$label), "focal_pk",
+          ifelse(grepl("bound by a heterodimer", b$label), "focal_enh",
+          ifelse(grepl("Enhancers", b$label), "ref_enh", "ctrl")))
+b$col <- c(focal_pk = PAL_HETERO[["Trh/Tgo"]], focal_enh = M2,
+           ref_enh = PAL_CONTEXT[["distal_enh"]], ctrl = NEUT)[b$role]
+b$family <- factor(b$family, levels = unique(b$family))
+b$label <- factor(b$label, levels = rev(b$label))
+b$note <- sprintf("%.2f [%.2f\u2013%.2f]", b$or, b$lo, b$hi)
+b$gcl <- ifelse(is.na(b$gc), "", sprintf("GC %.0f%%", b$gc))
+pB <- ggplot(b, aes(or, label)) +
+  ## Dashed line at the unity rule marks the null; dashed is used as the
+  ## reference-level idiom throughout this set (as for the q_0.95 rule and
+  ## the E = 1 rule elsewhere), distinguishing it from the solid y-axis
+  ## line and facet strip edges.
+  geom_vline(xintercept = 1, colour = INK, linewidth = 0.5, linetype = 2) +
+  geom_errorbar(aes(xmin = lo, xmax = hi, colour = I(col)), orientation = "y",
+                width = 0, linewidth = 0.7) +
+  geom_point(aes(fill = I(col), size = role %in% c("focal_pk","focal_enh")),
+             shape = 21, colour = "black", stroke = 0.4) +
+  geom_text(aes(x = 38, label = note), hjust = 1, size = ANN / .pt, colour = INK,
+            fontface = "bold") +
+  geom_text(aes(x = 38, label = gcl), hjust = 1, vjust = 2.3,
+            size = (ANN - 1.2) / .pt, colour = ANNC) +
+  facet_wrap(~ family, ncol = 1, scales = "free_y", strip.position = "top") +
+  scale_size_manual(values = c(`FALSE` = 2.5, `TRUE` = 3.5), guide = "none") +
+## Axis drawn to data range, last tick 16, panel to 42, so stats block clears Trh/Tgo whisker (12.43).
+## Right expansion 1% (block at x=38, hjust=1, right edge 38); left expansion 5%.
+## Shorter log range gives more pixels per log unit, keeping block's left edge clear of whisker at 12.43.
+  scale_x_log10(limits = c(0.85, 42), expand = expansion(mult = c(0.05, 0.01)),
+                breaks = c(1, 2, 4, 8, 16),
+                labels = c("1", "2", "4", "8", "16")) +
+  labs(x = "Odds ratio for Motif2 carriage against that row's own baseline (log scale)",
+       y = NULL) +
+  th_house() +
+  ## BOXED strips (Fig 3.6 / 3.12 / 5.6); the two facets are STACKED, so the
+  ## 1 cm gutter th_barhouse() sets is pulled back to 0.5 cm.
+  th_barhouse() +
+  theme(strip.text = element_text(face = "bold", size = BASE - 1.5, hjust = 0.5,
+                                  margin = margin(3, 3, 3, 3)),
+        panel.spacing = unit(0.5, "cm"), plot.margin = margin(8, 12, 8, 8))
+ggsave(file.path(OUT, "fig4_12_motif2_attribution.png"), pB,
+       width = 8.8, height = 4.6, dpi = 300, bg = "white")
+
+```
+
+## Figure: fig_motif2_robustness.png
+```{r, include=TRUE, eval=FALSE, 'Figure 4.15 - fig_motif2_robustness.png'}
+## ============================================================
+## Panels A and B: base-R hand style (hs_* functions), not ggplot.
+## A: observed value vs resampled null, boxed null with dashed 95th percentile, borderless stats block, observed value in narrow panel (2.5x null maximum).
+## B: count-per-offset histogram binned at 1 bp, filled black-bordered bars, box kept.
+## C (AUROC by sub-motif) is a separate ggplot PNG for Chapter 3, not part of this figure.
+## No random numbers; values checked against results/reported_values.tsv (jointMotifTwoN from chapter3_trh_tgo_binding.Rmd).
+## ============================================================
+load_values <- function(path = VALUES_FILE) {
+  if (!file.exists(path)) return(list())
+  tab <- read.delim(path, colClasses = "character", quote = "", comment.char = "")
+  as.list(setNames(tab$value, tab$name))
+}
+V <- load_values()
+TEXT_VALUES <- list(jointMotifTwoN = "221", motifTwoShufNullMean = "70.3",
+                    motifTwoShufZ = "19", motifTwoRegFold = "50")
+for (k in names(TEXT_VALUES)) if (is.null(V[[k]])) V[[k]] <- TEXT_VALUES[[k]]
+
+nullA <- scan(file.path(RB, "shuffle_null_50", "null_counts.txt"), quiet = TRUE)
+obsA  <- scan(file.path(RB, "shuffle_null_50", "observed.txt"), quiet = TRUE)
+zA    <- (obsA - mean(nullA)) / sd(nullA)
+thrA  <- unname(quantile(nullA, 0.95))
+stopifnot(obsA == as.integer(V$jointMotifTwoN),
+          abs(mean(nullA) - as.numeric(V$motifTwoShufNullMean)) < 0.05,
+          abs(zA - as.numeric(V$motifTwoShufZ)) < 0.5,   # the reported value is rounded
+          max(nullA) < obsA)          # 0 of 50 shuffles reach the observed
+
+r2   <- read.csv(file.path(RB, "R2_register_profile.csv"))
+offB <- r2$n[r2$offset != 0]
+reg0 <- r2$n[r2$offset == 0]
+stopifnot(nrow(r2) == 121L,
+          round(reg0 / mean(offB)) == as.integer(V$motifTwoRegFold))
+
+## One file per panel, each 8.0 x 3.0 in; A is 3.8 in tall, B is 3.0 in.
+## Stats block placed top-left to avoid the tallest histogram bar (12 of 50
+## shuffles); bar height kept at 58% of panel rather than flattened to 48%.
+hs_png(file.path(OUT, "fig4_13_motif2_robustness_A.png"), width_in = 8.0, height_in = 3.8)
+## widths: null panel, then the narrow observed panel (as Fig 3.5B / 4.6)
+layout(matrix(1:2, nrow = 1), widths = c(1.00, 0.20))
+
+## ---- (A) observed against the dinucleotide-shuffled null -------------------
+hA    <- hist(nullA, breaks = seq(55, 90, by = 5), plot = FALSE)
+## Trial value only, the block below solves for the ylim it actually needs.
+ylimA <- c(0, max(hA$counts) * 1.32)
+items <- list(bquote(italic(Z) == .(sprintf("%.1f", zA))),
+              bquote(italic(p) < .(sprintf("%.3f", 1 / (length(nullA) + 1)))),
+              ## italic(n) for the same reason as italic(q) below, a bare
+              ## name is set upright, which left this line roman beside the
+              ## italic Z and p above it
+              bquote(italic(n)[shuffles] == .(length(nullA))))
+hs_par()
+plot.new()
+## hs_gutter() not needed: block is top-left, rule at thrA cannot reach it.
+## Left corner overhangs 60-65 bar (12 of 50 shuffles); needs head height, not width.
+## legend() box scales with ylim; use one trial window to size ylim clearing the bar.
+plot.window(xlim = range(hA$breaks), ylim = ylimA)
+lgA   <- legend("topleft", legend = as.expression(items), bty = "n",
+                cex = HS$cex_ann, y.intersp = 1.3, plot = FALSE)
+underA <- hA$counts[hA$breaks[-length(hA$breaks)] < lgA$rect$left + lgA$rect$w]
+fracA <- (lgA$rect$top - lgA$rect$h) / ylimA[2]   # block's underside, as a fraction
+stopifnot(fracA > 0)                              # block taller than the panel
+ylimA <- c(0, max(ylimA[2], max(underA) * 1.06 / fracA))
+## and the solve must not buy that clearance by flattening the histogram: if the
+## tallest bar drops below half the panel, the canvas is too short for the block
+## rather than the ylim too small (that is why this panel is 3.8 in, not 3.0).
+stopifnot(max(hA$counts) / ylimA[2] > 0.5)
+plot.window(xlim = range(hA$breaks), ylim = ylimA)
+hs_bars(hA, fill = adjustcolor(NEUT, alpha.f = 0.5), border = INK)
+hs_rule(thrA, THR, lty = 2)
+## Label placed at 0.70 of panel height, level with the upper half of the rule it names,
+## clear of the statistics block and above the 80-85 bar (4 counts, ~19% of the taller
+## ylim). It is drawn pos = 4 from thrA = 82.1, leaving 7.9 units of the 55-90 window --
+## about 1.4 in of panel for a 0.9 in label, so it stays inside the right edge.
+## italic(q), not a bare q: plotmath sets an unmarked name upright, which would put
+## a roman q beside the italic p and Z used elsewhere for this block.
+text(thrA, hs_up(0.70), bquote(italic(q)[0.95] == .(round(thrA, 1))), col = THR,
+     cex = HS$cex_ann, pos = 4)
+axis(1, at = pretty(range(hA$breaks)))
+axis(2)
+box()
+title(xlab = "Peaks carrying Motif2 per shuffle", ylab = "Shuffles")
+## top-LEFT. Right-aligned, the block's bottom line (n_shuffles) came down
+## beside the 95th-percentile rule and crowded the q label whatever height that
+## label was given; the left corner is the only one the rule cannot reach.
+hs_block("topleft", items)
+## No panel title. The caption states that the panel plots the shuffled null and
+## that the dashed rule is its 95th percentile, and the block above already
+## prints n_shuffles, so a title would only repeat them. HS$mar_main is left
+## as is: the band it reserves is not blank, because the narrow panel's
+## "Observed" title sits in it, and equal top margins keep the two plot boxes
+## aligned.
+
+## ---- (A, right) the observed value on its own panel ------------------------
+## 221 lies 2.5x beyond the null maximum, so it cannot share the null's axis
+## without compressing the null to a spike, the same reason Fig 3.5B / 4.6
+## give the observed value a panel of its own.
+hs_par(side = TRUE)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+rect(0.30, 0.05, 0.70, 0.85, col = M2, border = NA)
+text(0.5, 0.93, sprintf("%d/%s", obsA, V$jointPeaks), col = M2, font = 2,
+     cex = HS$cex_ann)
+title(main = "Observed", line = 0.9, font.main = 2, cex.main = 0.85)
+hs_close()
+
+## ---- (B) core-to-tail register profile, in Fig P.1's histogram idiom -------
+hs_png(file.path(OUT, "fig4_13_motif2_robustness_B.png"), width_in = 8.0, height_in = 3.0)
+hs_par()
+plot.new()
+plot.window(xlim = c(min(r2$offset) - 0.5, max(r2$offset) + 0.5),
+            ylim = c(0, reg0 * 1.34))
+rect(r2$offset - 0.5, 0, r2$offset + 0.5, r2$n, col = M2, border = INK,
+     lwd = HS$lwd_bar)
+abline(h = mean(offB), lty = 2, col = ANNC, lwd = 1)
+axis(1, at = seq(-60, 60, 20))
+axis(2)
+box()
+title(xlab = "Offset of the 3' A-tail from the 5' core (bp)",
+      ylab = "Occurrences")
+hs_block("topleft",
+         list(sprintf("register 0: %d occurrences", reg0),
+              sprintf("off-register mean %.2f (SD %.2f)", mean(offB), sd(offB)),
+              ## "-fold", not "x": a literal x inside a plotmath
+              ## expression renders as <U+00D7> on this device, so the
+              ## enrichment value is reported using the wording "-fold"
+              sprintf("enrichment %.0f-fold", reg0 / mean(offB))),
+         col = INK)
+hs_close()
+
+
+resC <- readRDS(file.path(RB, "motif2_robustness_partC.rds"))
+r9 <- resC$R9
+## The middle row is resC$R9's core_ebox, width 9, the scanned core,
+## labelled "CACTGA-anchored core (9 bp)" to distinguish it from the CACTG
+## pentamer (positions 4-8) used in the phyloP figure.
+r9$submotif <- factor(c("Full 15-bp Motif2", "CACTGA-anchored core (9 bp)", "A-rich tail (6 bp)"),
+                      levels = rev(c("Full 15-bp Motif2", "CACTGA-anchored core (9 bp)", "A-rich tail (6 bp)")))
+p415c <- ggplot(r9, aes(AUROC, submotif)) +
+  geom_vline(xintercept = 0.5, colour = INK, linewidth = 0.5) +
+  geom_segment(aes(x = 0.5, xend = AUROC, yend = submotif, colour = submotif), linewidth = 0.8) +
+  geom_point(aes(colour = submotif), size = 3.0) +
+  scale_colour_manual(values = c("Full 15-bp Motif2" = M2,
+                                 "CACTGA-anchored core (9 bp)" = M2,
+                                 "A-rich tail (6 bp)" = NEUT), guide = "none") +
+  geom_text(aes(label = sprintf("%.3f", AUROC)), hjust = -0.45,
+            size = ANN / .pt, colour = INK) +
+  ## Label is left-aligned just to the right of the 0.5 rule rather than
+  ## centred on it, because the label belongs to the line rather than to a
+  ## band; centring would run the rule through the words as a strikethrough.
+  annotate("text", x = 0.503, y = 3.55, hjust = 0, vjust = 0,
+           label = "0.5 = no discrimination", size = (ANN - 1) / .pt, colour = ANNC) +
+  scale_x_continuous(limits = c(0.48, 0.73), breaks = seq(0.50, 0.70, 0.05)) +
+  coord_cartesian(clip = "off", ylim = c(0.7, 3.4)) +
+  labs(x = "AUROC, peaks vs dinucleotide-shuffled sequence", y = NULL) +
+  th_house() + theme(plot.margin = margin(20, 12, 8, 8))
+
+## Panel C is written as its own PNG and floated separately in Chapter 3,
+## since the AUROC values it plots belong to the Chapter 3 result rather than
+## the Chapter 4 concatenation argument. This figure keeps the two panels
+## (A and B) that belong to the concatenation argument.
+## fig_motif2_robustness.png (panels A and B) is written by the base-R device
+## above; there is no patchwork object for it.
+
+## Panel C, standalone. No tag letter: it is a single-panel figure, so the
+## caption carries the description instead.
+p_auroc <- p415c + theme(plot.margin = margin(8, 12, 8, 8))
+ggsave(file.path(OUT, "fig3_24_motif2_auroc.png"), p_auroc,
+       width = 6.4, height = 2.9, dpi = 300, bg = "white")
+
+```
+
+## Appendix figure: figN_1_motif2_gc_confound.png
+```{r, include=TRUE, eval=FALSE, 'Appendix figure - figN_1_motif2_gc_confound.png'}
+
+M <- PROJECT_DIR
+pk <- read.csv(file.path(M,"data/chapter4/table4_ctrl_motif2_frequency.csv"), check.names=FALSE)
+rownames(pk) <- pk$Factor
+t <- read.csv(file.path(M,"data/motif2_attribution/pooled_attribution_tests.csv"))
+p <- t[t$comparison=="enhancers bound by pooled vs unbound",]
+n <- read.csv(file.path(M,"data/motif2_attribution/nonenh_baseline.csv"))
+gcf <- function(f){ L <- readLines(f, warn=FALSE); s <- paste(L[!grepl("^>",L)], collapse="")
+  nchar(gsub("[^GCgc]","",s))/nchar(s) }
+FA <- file.path(M,"data/ctrl_tf/fimo/input_fastas")
+GC <- c("Trh/Tgo (ref)"=NA,
+        TWI=gcf(file.path(FA,"TWI_enh_summits_200bp.fa")),
+        VVL=gcf(file.path(FA,"VVL_enh_summits_200bp.fa")),
+        RIB=gcf(file.path(FA,"RIB_enh_summits_200bp.fa")),
+        ## Da (class I bHLH hub) is a fourth control: it is already a row of
+        ## table4_ctrl_motif2_frequency.csv and of the disjoint-list test
+        ## (Fig 4.8A), and its summit FASTA is scanned in the same 200 bp
+        ## window as the other three.
+        DA=gcf(file.path(FA,"DA_enh_summits_200bp.fa")),
+        "Matched non-Tgo BG"=gcf(file.path(FA,"matched_bg_200bp.fa")))
+GC["Trh/Tgo (ref)"] <- NA
+enhgc <- gcf(file.path(M,"data/motif2_attribution/enh_201bp.fa"))
+
+## KEY: both families have essentially the same internal baseline
+bg_a <- pk["Matched non-Tgo BG","N_Motif2_pos"]; bg_n <- pk["Matched non-Tgo BG","N_scanned"]
+
+rows <- list()
+add <- function(lab, a, na, b, nb, fam, gc=NA){
+  ft <- fisher.test(matrix(c(a,na-a,b,nb-b),2,byrow=TRUE))
+  rows[[length(rows)+1]] <<- data.frame(label=lab, a=a, n=na, pct=100*a/na,
+    or=unname(ft$estimate), lo=ft$conf.int[1], hi=ft$conf.int[2], p=ft$p.value,
+    family=fam, gc=100*gc, stringsAsFactors=FALSE) }
+for (f in c("Trh/Tgo (ref)","VVL","DA","RIB","TWI")) {
+  add(f, pk[f,"N_Motif2_pos"], pk[f,"N_scanned"], bg_a, bg_n,
+      "Factor peaks, vs GC/length-matched background", GC[[f]])
+}
+add("Enhancers bound by a heterodimer", p$a, p$n_a, p$b, p$n_b,
+    "Enhancer catalogue, vs unbound enhancers", enhgc)
+add("Enhancers bound by none", p$b, p$n_b, n$with_motif2, n$n,
+    "Enhancer catalogue, vs unbound enhancers", enhgc)
+d <- do.call(rbind, rows)
+d$or <- round(d$or,2); d$lo <- round(d$lo,2); d$hi <- round(d$hi,2)
+
+## ------------------------------------------------------------
+## Variant C: carriage vs GC content; all sets follow one composition trend, focal sets sit above it.
+## Label offsets computed from fit slope and label half-width to clear overlap; labels over 32 characters shortened.
+## Row labels, colours and roles are shared with the main-text panel.
+## ------------------------------------------------------------
+b <- d
+b$label[b$label == "Trh/Tgo (ref)"] <- "Trh/Tgo peaks"
+b$label[b$label == "VVL"] <- "Vvl peaks  (POU-HD)"
+b$label[b$label == "RIB"] <- "Rib peaks  (BTB-ZF)"
+b$label[b$label == "TWI"] <- "Twi peaks  (bHLH, no PAS)"
+## Same descriptor as the main-text attribution chunk, which already carries Da
+b$label[b$label == "DA"]  <- "Da peaks  (bHLH class I, no PAS)"
+b$label[b$label == "Enhancers bound by a heterodimer"] <- "Enhancers bound by a heterodimer"
+b$label[b$label == "Enhancers bound by none"] <- "Enhancers bound by none"
+b$role <- ifelse(grepl("Trh/Tgo", b$label), "focal_pk",
+          ifelse(grepl("bound by a heterodimer", b$label), "focal_enh",
+          ifelse(grepl("Enhancers", b$label), "ref_enh", "ctrl")))
+b$col <- c(focal_pk = PAL_HETERO[["Trh/Tgo"]], focal_enh = M2,
+           ref_enh = PAL_CONTEXT[["distal_enh"]], ctrl = NEUT)[b$role]
+b$family <- factor(b$family, levels = unique(b$family))
+b$label <- factor(b$label, levels = rev(b$label))
+b$note <- sprintf("%.2f [%.2f\u2013%.2f]", b$or, b$lo, b$hi)
+b$gcl <- ifelse(is.na(b$gc), "", sprintf("GC %.0f%%", b$gc))
+
+cd <- b[!is.na(b$gc), ]
+fit  <- lm(log10(pct) ~ gc, data = cd)
+cd$resid <- residuals(fit)
+slope <- abs(coef(fit)[["gc"]])                    # log10 units per %GC
+
+cd$lab_short <- c("Vvl peaks", "Rib peaks", "Twi peaks", "Da peaks",
+                  "Bound enhancers", "Unbound enhancers")[
+                  match(sub("  \\(.*", "", cd$label),
+                        c("Vvl peaks", "Rib peaks", "Twi peaks", "Da peaks",
+                          "Enhancers bound by a heterodimer",
+                          "Enhancers bound by none"))]
+stopifnot(!anyNA(cd$lab_short))   # a new control with no short label would
+                                  # otherwise be drawn as a blank point
+
+## Pads halved, 1.6 -> 0.8 GC points either side. They existed to keep the
+## point labels (centred on their points) inside the panel; the widest of them
+## is checked against the new pad below, so a future relabelling cannot silently
+## push a name off the edge.
+X_LO <- min(cd$gc) - 0.8; X_HI <- max(cd$gc) + 0.8
+PANEL_W_IN <- 6.3; PANEL_H_IN <- 3.05                 # plotting region, inches
+Y_LO <- 5.2; Y_HI <- 52
+GLYPH_IN <- (ANN - 0.5) / 72 * 0.50                   # ~0.50 em mean advance
+TEXT_H_IN <- (ANN - 0.5) / 72 * 1.00
+## half-width in DATA units, and one text height in log10 units
+cd$half_w  <- nchar(cd$lab_short) * GLYPH_IN / PANEL_W_IN * (X_HI - X_LO) / 2
+text_h_log <- TEXT_H_IN / PANEL_H_IN * (log10(Y_HI) - log10(Y_LO))
+## clearance the label must have from the LINE, in text heights
+need <- (slope * cd$half_w + 0.5 * text_h_log) / text_h_log
+## the point is |resid| from the line already; the label needs the remainder
+have <- abs(cd$resid) / text_h_log
+cd$vj <- pmax(1.35, need - have + 0.9)
+cd$lab_vjust <- ifelse(cd$resid > 0, -cd$vj, cd$vj)
+
+gx <- seq(min(cd$gc), max(cd$gc), length.out = 80)
+fl <- data.frame(gc = gx, pct = 10^predict(fit, data.frame(gc = gx)))
+
+## VERIFY: for every label, the fit line's y over the label's x-extent must lie
+## outside the label's own y-band. Assert; never inspect.
+viol <- character()
+for (k in seq_len(nrow(cd))) {
+  lo <- max(cd$gc[k] - cd$half_w[k], min(gx))
+  hi <- min(cd$gc[k] + cd$half_w[k], max(gx))
+  if (hi <= lo) next
+  yf   <- log10(10^predict(fit, data.frame(gc = c(lo, hi))))
+  ## ggplot's vjust is INVERTED relative to data coordinates: a negative vjust
+  ## moves text UP the panel. lab_vjust = -vj for resid > 0 therefore draws the
+  ## label ABOVE its point, so the verifier adds the offset for resid > 0.
+  ctr  <- log10(cd$pct[k]) + sign(cd$resid[k]) * cd$vj[k] * text_h_log
+  band <- sort(c(ctr - 0.5 * text_h_log, ctr + 0.5 * text_h_log))
+  if (any(yf >= band[1] & yf <= band[2])) viol <- c(viol, cd$lab_short[k])
+}
+if (length(viol)) stop("fit line crosses label box: ", paste(viol, collapse = ", "))
+cat(sprintf("label/line check: clear for all %d labels (max offset %.1f text heights)\n",
+            nrow(cd), max(cd$vj)))
+
+pC <- ggplot(cd, aes(gc, pct)) +
+  geom_line(data = fl, colour = ANNC, linetype = "22", linewidth = 0.5) +
+  geom_point(aes(colour = I(col), size = role %in% c("focal_pk", "focal_enh"))) +
+  geom_text(aes(label = lab_short, vjust = lab_vjust),
+            hjust = 0.5, size = (ANN - 0.5) / .pt, colour = INK) +
+  ## Shows fit statistic only, plotmath for italic R and superscript, value quoted to keep trailing zero.
+  ## Positioned above dashed line, midway between Vvl and Rib strata, derived from fitted line.
+  ## Bold, two points up.
+  annotate("text", x = mean(sort(cd$gc)[1:2]),
+           y = approx(fl$gc, fl$pct, xout = mean(sort(cd$gc)[1:2]))$y * 1.42,
+           hjust = 0.5, vjust = 0, parse = TRUE,
+           label = sprintf("italic(R)^2 == '%.2f'", summary(fit)$r.squared),
+           ## INK (#333333), not ANNC (#666666): ANNC is the palette's grey for
+           ## subordinate annotation (p-values, n = counts), and this is the
+           ## figure's one headline number. INK is the same weight of black the
+           ## axis titles and point labels already carry, so it reads as black
+           ## without introducing a colour from outside the palette.
+           size = (ANN + 3.5) / .pt, fontface = "bold", colour = INK) +
+  scale_size_manual(values = c(`FALSE` = 2.6, `TRUE` = 3.6), guide = "none") +
+  ## Breaks pinned to whole GC points. Left to itself, the narrower range after
+  ## the pads were halved picks 2.5-unit steps and prints 40.0 / 42.5 / 45.0 --
+  ## decimals on an axis whose values are read to the unit, and a 45 tick past
+  ## the data.
+  scale_x_continuous(limits = c(X_LO, X_HI), breaks = seq(38, 44, 2)) +
+  scale_y_log10(limits = c(Y_LO, Y_HI), breaks = c(8, 12, 20, 40)) +
+  labs(x = "Mean GC content of the scanned windows (%)",
+       y = "Motif2 carriage (%)") +
+  th_house()
+ggsave(file.path(OUT, "figN_1_motif2_gc_confound.png"), pC,
+       width = 7.6, height = 4.0, dpi = 300, bg = "white")
+```
+
+## Rebuild every figure in this file
+
+Chunks are `eval=FALSE`, so knitting does not redraw anything. This chunk reads the
+fences out of the file and evaluates them in one environment, so `setup` runs once
+and every figure chunk sees it.
+
+Do **not** use `knitr::purl()` for this: it honours `eval=FALSE` by commenting the
+code out, so the extracted script runs clean and writes no figures at all — a silent
+no-op that looks like success.
+
+```{r, include=TRUE, eval=FALSE, 'Rebuild every figure in this file'}
+RMD <- file.path(PROJECT_DIR, "04_chapter_analyses",
+                 "chapter3_4_figures.Rmd")
+L   <- readLines(RMD, warn = FALSE)
+op  <- grep("^```\\{r", L)
+cl  <- grep("^```[[:space:]]*$", L)
+lab <- sub("^```\\{r[^']*'([^']*)'\\}.*$", "\\1", L[op])
+lab[!grepl("'", L[op])] <- "setup"
+
+env <- new.env(parent = globalenv())
+for (i in seq_along(op)) {
+  if (grepl("^Rebuild", lab[i])) next          # never recurse into this chunk
+  cat("---", lab[i], "\n")
+  eval(parse(text = L[(op[i] + 1):(cl[cl > op[i]][1] - 1)]), envir = env)
+}
+cat("rebuilt", sum(!grepl("^Rebuild|^setup", lab)), "figures into", env$OUT, "\n")
+```
+

@@ -1,0 +1,24 @@
+tool	version	purpose	platform
+bowtie2	2.5.5	Short-read alignment to dm6	Linux cluster, conda env phd
+samtools	1.23	BAM sorting, indexing, flagstat	Linux cluster, conda env phd
+Picard	3.4.0	Duplicate marking (MarkDuplicates)	Linux cluster, conda env phd
+MACS3	3.0.3	Peak calling (callpeak)	Linux cluster, conda env phd
+IDR	2.0.4.2	Irreproducible Discovery Rate	Linux cluster, conda env idr
+phantompeakqualtools	1.2.2	NSC/RSC metrics, fragment size	Linux cluster, conda env phd
+spp (R)	1.16.0	Cross-correlation analysis	Linux cluster, conda env r_phylo
+deepTools	3.5.5	bamCompare, computeMatrix, plotHeatmap	Linux cluster, conda env phd
+bedtools	2.31.1	maskfasta, getfasta, intersect	Linux cluster, conda env phd
+MEME Suite	5.5.5	MEME-ChIP, STREME, FIMO, TOMTOM	macOS workstation
+AlphaFold 3	Server	Heterodimer interface modelling	AlphaFold Server
+ChimeraX	2026-05-28	Visualisation of 3D-structures	macOS workstation
+GenomicRanges	1.54.1	Genomic interval operations	Linux cluster, conda env phd
+ChIPseeker	1.38.0	Peak annotation, gene assignment	Linux cluster, conda env phd
+regioneR	1.34.0	Permutation testing	Linux cluster, conda env phd
+chipenrich	2.26.0	Locus-length-adjusted GO enrichment	Linux cluster, conda env phd
+Dapple	2000-08-05	Microarray spot-finding and quantitation	FlyChip
+limma	3.26.9	Microarray differential expression	FlyChip
+vsn	3.38.0	Variance-stabilising normalisation	FlyChip
+universalmotif	1.28.0	PWM import, TOMTOM wrapper	macOS workstation
+TxDb.Dmelanogaster.UCSC.dm6.ensGene	3.12.0	dm6 transcript annotation	Linux cluster and macOS workstation
+org.Dm.eg.db	3.18.0	Gene ID mapping	Linux cluster, conda env phd
+BSgenome.Dmelanogaster.UCSC.dm6	1.4.1	dm6 genome sequence	Linux cluster and macOS workstation

@@ -1,0 +1,5 @@
+"Heterodimer","Comparison","Fisher_OR","p_value"
+"Trh/Tgo","Annotated enhancer vs non-annotated",0.509,0.00159369510651105
+"Sim/Tgo","Annotated enhancer vs non-annotated",0.663,0.116516038668572
+"Dys/Tgo","Annotated enhancer vs non-annotated",0.874,0.39841139162952
+"Sima/Tgo","Annotated enhancer vs non-annotated",0.53,0.0246560076073342

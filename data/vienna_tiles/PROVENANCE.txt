@@ -1,0 +1,24 @@
+Vienna Tiles (VT) in vivo embryonic enhancer activity data
+==========================================================
+Source URL : https://enhancers.starklab.org/download/tiles/all
+File       : vt_tiles_all_downloaded.csv  (verbatim server response, text/csv;
+             download it from the source URL into this folder)
+Reference  : Kvon EZ, Kazmar T, Stampfel G, Yanez-Cuna JO, Pagani M,
+             Schernhuber K, Dickson BJ, Stark A. Genome-scale functional
+             characterization of Drosophila developmental enhancers in vivo.
+             Nature 2014 Aug 7;512(7512):91-95.
+
+Assembly   : dm3 (per https://enhancers.starklab.org/methods) -- MUST be
+             lifted to dm6 before any overlap with this project's peak sets.
+
+Columns    : VTID, Chrosome [sic], Start, End, Length, Verification Status,
+             Positive, stg4_6, stg7_8, stg9_10, stg11_12, stg13_14, stg15_16
+             Stage columns hold "tissue;strength" tokens joined by "|";
+             "NA" = no activity annotated at that stage.
+             Positive: 1 = tile drove reporter expression at any stage.
+             Verification Status: "correct" = insert sequence verified.
+
+Raw tallies (computed from the file, not quoted from the paper):
+  tiles total ................ 7793
+  Positive == 1 .............. 3604
+  Verification Status correct . 7478

@@ -1,0 +1,506 @@
+---
+title: "Alignment and quality control: Twi, Kr and Stat92E ChIP-seq"
+author: "Yermek Aiten"
+output: html_document
+---
+
+**Twist**: ENCSR119OUI — 2 reps (ENCFF918UHG, ENCFF271FJU) + 1 control (ENCFF082BHL). SE50nt. Standard 2-rep pipeline like TRH.
+
+**Krüppel**: ENCSR156QJC — 2 reps (ENCFF267FIR, ENCFF635AOG) + 1 control (ENCFF943DWF). SE50nt. Standard 2-rep pipeline.
+
+**STAT92E**: three separate experiments:
+- ENCSR240ADR — 2 reps (ENCFF047YGA, ENCFF274EPE) + control (ENCFF610AIH). SE50nt. Experiment A.
+- ENCSR290OJD — 2 reps (ENCFF677DJI, ENCFF056WPO) + control (ENCFF331FON). SE50nt. Experiment A2.
+- ENCSR494UZY — 2 reps (ENCFF052DLA, ENCFF199LTY) + control (ENCFF799QGS). SE50nt. Experiment B.
+
+Each dataset is processed independently. All are SE50nt, so MACS3 is run with `--nomodel --extsize` from SPP, as for Trh. Krüppel and the three Stat92E datasets were excluded from the control analysis on the quality-control grounds given in the text (RSC for Krüppel; replicate reproducibility for Stat92E).
+
+```{r setup, include=TRUE, eval=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+---
+
+```{bash twi-kr-stat-directories, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# DIRECTORY SETUP, TWI, KR, STAT92E (both experiments)
+# ============================================================
+set -euo pipefail
+
+mkdir -p 03_bam 04_qc 07_blacklist 08_qc 09_peaks 10_idr 11_final
+mkdir -p 04_qc/insert_sizes 04_qc/fingerprint
+mkdir -p 09_peaks/TWI 09_peaks/KR 09_peaks/STAT92E_A 09_peaks/STAT92E_B 09_peaks/STAT92E_A2
+mkdir -p 10_idr/TWI 10_idr/KR 10_idr/STAT92E_A 10_idr/STAT92E_B 10_idr/STAT92E_A2
+mkdir -p 12_pseudoreps/TWI 12_pseudoreps/KR \
+         12_pseudoreps/STAT92E_A 12_pseudoreps/STAT92E_B 12_pseudoreps/STAT92E_A2
+mkdir -p $PROJECT_DIR/tmp
+
+echo "=== Directory structure created ==="
+```
+
+---
+
+```{bash alignment-twi, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 1, ALIGNMENT: TWIST (SE50nt)
+# ENCFF918UHG = TWI rep1
+# ENCFF271FJU = TWI rep2
+# ENCFF082BHL = TWI control
+# ============================================================
+set -euo pipefail
+
+conda activate phd
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/twi/ENCFF918UHG.fastq.gz \
+  -S 03_bam/TWI_rep1.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/twi/ENCFF271FJU.fastq.gz \
+  -S 03_bam/TWI_rep2.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/twi/ENCFF082BHL.fastq.gz \
+  -S 03_bam/TWI_control.sam -p 8
+
+for SAMPLE in TWI_rep1 TWI_rep2 TWI_control
+do
+  samtools view -bS 03_bam/${SAMPLE}.sam \
+    | samtools sort -o 03_bam/${SAMPLE}.bam
+  rm 03_bam/${SAMPLE}.sam
+  echo "${SAMPLE} aligned and sorted"
+done
+```
+
+---
+
+```{bash alignment-kr, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 1, ALIGNMENT: KRUPPEL (SE50nt)
+# ENCFF267FIR = KR rep1
+# ENCFF635AOG = KR rep2
+# ENCFF943DWF = KR control
+# ============================================================
+set -euo pipefail
+
+conda activate phd
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/kr/ENCFF267FIR.fastq.gz \
+  -S 03_bam/KR_rep1.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/kr/ENCFF635AOG.fastq.gz \
+  -S 03_bam/KR_rep2.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/kr/ENCFF943DWF.fastq.gz \
+  -S 03_bam/KR_control.sam -p 8
+
+for SAMPLE in KR_rep1 KR_rep2 KR_control
+do
+  samtools view -bS 03_bam/${SAMPLE}.sam \
+    | samtools sort -o 03_bam/${SAMPLE}.bam
+  rm 03_bam/${SAMPLE}.sam
+  echo "${SAMPLE} aligned and sorted"
+done
+```
+
+---
+
+```{bash alignment-stat92e, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 1, alignment: STAT92E (SE50nt)
+# Experiment A ENCSR240ADR: ENCFF047YGA rep1, ENCFF274EPE rep2, ENCFF610AIH control
+# Experiment A2 ENCSR290OJD: ENCFF677DJI rep1, ENCFF056WPO rep2, ENCFF331FON control
+# Experiment B ENCSR494UZY: ENCFF052
+set -euo pipefail
+
+conda activate phd
+
+# --- Experiment A ---
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF047YGA.fastq.gz \
+  -S 03_bam/STAT92E_A_rep1.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF274EPE.fastq.gz \
+  -S 03_bam/STAT92E_A_rep2.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF610AIH.fastq.gz \
+  -S 03_bam/STAT92E_A_control.sam -p 8
+
+# --- Experiment A2 ---
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF677DJI.fastq.gz \
+  -S 03_bam/STAT92E_A2_rep1.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF056WPO.fastq.gz \
+  -S 03_bam/STAT92E_A2_rep2.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF331FON.fastq.gz \
+  -S 03_bam/STAT92E_A2_control.sam -p 8
+
+# --- Experiment B ---
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF052DLA.fastq.gz \
+  -S 03_bam/STAT92E_B_rep1.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF199LTY.fastq.gz \
+  -S 03_bam/STAT92E_B_rep2.sam -p 8
+
+bowtie2 -x dm6 \
+  -U 01_fastqc/stat92e/ENCFF799QGS.fastq.gz \
+  -S 03_bam/STAT92E_B_control.sam -p 8
+
+              #STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+              #STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control
+for SAMPLE in STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control 
+do
+  samtools view -bS 03_bam/${SAMPLE}.sam \
+    | samtools sort -o 03_bam/${SAMPLE}.bam
+  rm 03_bam/${SAMPLE}.sam
+  echo "${SAMPLE} aligned and sorted"
+done
+```
+
+---
+
+```{bash readgroups-all, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 2, ADD READ GROUPS: ALL FACTORS
+# ============================================================
+set -euo pipefail
+
+add_rg() {
+  local SAMPLE=$1
+  local RGID=$2
+  picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+    AddOrReplaceReadGroups \
+    I=03_bam/${SAMPLE}.bam \
+    O=03_bam/${SAMPLE}.RG.bam \
+    RGID=${RGID} RGLB=lib1 RGPL=ILLUMINA RGPU=unit1 RGSM=${RGID}
+  echo "${SAMPLE} read groups added"
+}
+
+# Twist
+add_rg TWI_rep1    TWI_rep1
+add_rg TWI_rep2    TWI_rep2
+add_rg TWI_control TWI_ctrl
+
+# Krüppel
+add_rg KR_rep1    KR_rep1
+add_rg KR_rep2    KR_rep2
+add_rg KR_control KR_ctrl
+
+# STAT92E experiment A
+add_rg STAT92E_A_rep1    STAT92E_A_rep1
+add_rg STAT92E_A_rep2    STAT92E_A_rep2
+add_rg STAT92E_A_control STAT92E_A_ctrl
+
+# STAT92E experiment A2
+add_rg STAT92E_A2_rep1    STAT92E_A2_rep1
+add_rg STAT92E_A2_rep2    STAT92E_A2_rep2
+add_rg STAT92E_A2_control STAT92E_A2_ctrl
+
+# STAT92E experiment B
+add_rg STAT92E_B_rep1    STAT92E_B_rep1
+add_rg STAT92E_B_rep2    STAT92E_B_rep2
+add_rg STAT92E_B_control STAT92E_B_ctrl
+```
+
+---
+
+```{bash sort-after-rg, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 3, SORT AFTER READ GROUPS: ALL FACTORS
+# ============================================================
+set -euo pipefail
+
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  samtools sort -@ 8 \
+    -o 03_bam/${SAMPLE}.RG.sorted.bam \
+    03_bam/${SAMPLE}.RG.bam
+  echo "${SAMPLE} sorted after RG"
+done
+```
+
+---
+
+```{bash markdup-all, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 4, MARK AND REMOVE DUPLICATES: ALL FACTORS
+# ============================================================
+set -euo pipefail
+
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  picard -Djava.io.tmpdir=$PROJECT_DIR/tmp \
+    MarkDuplicates \
+    I=03_bam/${SAMPLE}.RG.sorted.bam \
+    O=03_bam/${SAMPLE}.rmdup.bam \
+    M=04_qc/${SAMPLE}.dup_metrics.txt \
+    REMOVE_DUPLICATES=true \
+    ASSUME_SORTED=true
+  echo "${SAMPLE} duplicates removed"
+done
+```
+
+---
+
+```{bash filter-all, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 5, FILTER BAM: ALL FACTORS (SE flags: no -f 2)
+# -q 30  : MAPQ >= 30
+# -F 1804: exclude unmapped, not primary, duplicate, supplementary
+# ============================================================
+set -euo pipefail
+
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  samtools view -b \
+    -q 30 \
+    -F 1804 \
+    03_bam/${SAMPLE}.rmdup.bam \
+    > 03_bam/${SAMPLE}.filtered.bam
+
+  samtools index 03_bam/${SAMPLE}.filtered.bam
+  echo "${SAMPLE} filtered"
+done
+```
+
+---
+
+```{bash blacklist-all, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 6, BLACKLIST REMOVAL: ALL FACTORS
+# ============================================================
+set -euo pipefail
+
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  bedtools intersect -v \
+    -a 03_bam/${SAMPLE}.filtered.bam \
+    -b dm6-blacklist.v2.bed \
+    > 07_blacklist/${SAMPLE}.clean.bam
+
+  samtools index 07_blacklist/${SAMPLE}.clean.bam
+  echo "${SAMPLE} blacklist removed"
+done
+```
+
+---
+
+```{bash flagstat-all, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 7, FLAGSTAT QC: ALL FACTORS
+# ============================================================
+set -euo pipefail
+
+echo "=== FLAGSTAT SUMMARY ==="
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  echo "--- ${SAMPLE} ---"
+  samtools flagstat 07_blacklist/${SAMPLE}.clean.bam
+done
+```
+
+---
+
+```{bash spp-all, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 8, SPP FRAGMENT SIZE ESTIMATION: ALL FACTORS (SE only)
+# Used to derive --extsize for MACS3 --nomodel
+# Run on ChIP samples only, not controls
+# ============================================================
+set -euo pipefail
+
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  run_spp.R \
+    -c=07_blacklist/${SAMPLE}.clean.bam \
+    -s=-100:5:600 \
+    -out=04_qc/${SAMPLE}_spp.clean.txt
+  echo "${SAMPLE} SPP done"
+done
+
+echo ""
+echo "=== SPP RESULTS SUMMARY ==="
+echo "Factor | Sample | Fragment_est | NSC | RSC | Tag"
+for SAMPLE in \
+  TWI_rep1 TWI_rep2 TWI_control \
+  KR_rep1 KR_rep2 KR_control \
+  STAT92E_A_rep1 STAT92E_A_rep2 STAT92E_A_control \
+  STAT92E_B_rep1 STAT92E_B_rep2 STAT92E_B_control \
+  STAT92E_A2_rep1 STAT92E_A2_rep2 STAT92E_A2_control
+do
+  FRAG=$(grep -oP 'Top 3 estimates.*?\K[0-9]+' \
+    04_qc/${SAMPLE}_spp.clean.txt | head -1)
+  NSC=$(grep -oP 'NSC\) [0-9.]+' \
+    04_qc/${SAMPLE}_spp.clean.txt | grep -oP '[0-9.]+')
+  RSC=$(grep -oP 'RSC\) [0-9.]+' \
+    04_qc/${SAMPLE}_spp.clean.txt | grep -oP '[0-9.]+')
+  TAG=$(grep -oP 'Quality Tag [0-9-]+' \
+    04_qc/${SAMPLE}_spp.clean.txt | grep -oP '[0-9-]+')
+  echo "${SAMPLE} | ${FRAG} | ${NSC} | ${RSC} | ${TAG}"
+done
+
+# EXTSIZE per factor is set from the SPP output:
+# TWI_EXTSIZE = mean(TWI_rep1_fragment, TWI_rep2_fragment)
+# KR_EXTSIZE  = mean(KR_rep1_fragment, KR_rep2_fragment)
+# STAT92E_A_EXTSIZE = mean(STAT92E_A_rep1_fragment, STAT92E_A_rep2_fragment)
+# STAT92E_B_EXTSIZE = mean(STAT92E_B_rep1_fragment, STAT92E_B_rep2_fragment)
+# Values are inserted below based on the SPP output
+```
+
+---
+
+```{bash fingerprint-correlation, include=TRUE, eval=FALSE}
+#!/usr/bin/env bash
+# ============================================================
+# STAGE 9, FINGERPRINT AND REPLICATE CORRELATION: ALL FACTORS
+# Run fingerprint per factor group; correlation per ChIP replicate group only
+# ============================================================
+set -euo pipefail
+
+# --- Twist fingerprint ---
+plotFingerprint \
+  -b 07_blacklist/TWI_rep1.clean.bam \
+     07_blacklist/TWI_rep2.clean.bam \
+     07_blacklist/TWI_control.clean.bam \
+  --plotFile 04_qc/fingerprint/TWI_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/TWI_fingerprint.tab \
+  --numberOfSamples 500000 \
+  --extendReads 220 \
+  -p 8
+
+# --- Krüppel fingerprint ---
+plotFingerprint \
+  -b 07_blacklist/KR_rep1.clean.bam \
+     07_blacklist/KR_rep2.clean.bam \
+     07_blacklist/KR_control.clean.bam \
+  --plotFile 04_qc/fingerprint/KR_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/KR_fingerprint.tab \
+  --numberOfSamples 500000 \
+  --extendReads 110 \
+  -p 8
+
+# --- STAT92E experiment A fingerprint ---
+plotFingerprint \
+  -b 07_blacklist/STAT92E_A_rep1.clean.bam \
+     07_blacklist/STAT92E_A_rep2.clean.bam \
+     07_blacklist/STAT92E_A_control.clean.bam \
+  --plotFile 04_qc/fingerprint/STAT92E_A_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/STAT92E_A_fingerprint.tab \
+  --numberOfSamples 500000 \
+  --extendReads 75 \
+  -p 8
+
+plotFingerprint \
+  -b 07_blacklist/STAT92E_A2_rep1.clean.bam \
+     07_blacklist/STAT92E_A2_rep2.clean.bam \
+     07_blacklist/STAT92E_A2_control.clean.bam \
+  --plotFile 04_qc/fingerprint/STAT92E_A2_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/STAT92E_A2_fingerprint.tab \
+  --numberOfSamples 500000 \
+  --extendReads 75 \
+  -p 8
+  
+# --- STAT92E experiment B fingerprint ---
+plotFingerprint \
+  -b 07_blacklist/STAT92E_B_rep1.clean.bam \
+     07_blacklist/STAT92E_B_rep2.clean.bam \
+     07_blacklist/STAT92E_B_control.clean.bam \
+  --plotFile 04_qc/fingerprint/STAT92E_B_fingerprint.png \
+  --outRawCounts 04_qc/fingerprint/STAT92E_B_fingerprint.tab \
+  --numberOfSamples 500000 \
+  --extendReads 80 \
+  -p 8
+
+# --- Spearman correlation per factor ---
+for FACTOR in TWI KR
+do
+  multiBamSummary bins \
+    -b 07_blacklist/${FACTOR}_rep1.clean.bam \
+       07_blacklist/${FACTOR}_rep2.clean.bam \
+    --labels ${FACTOR}_rep1 ${FACTOR}_rep2 \
+    -o 08_qc/${FACTOR}.npz \
+    -p 8
+
+  plotCorrelation \
+    -in 08_qc/${FACTOR}.npz \
+    --corMethod spearman \
+    --skipZeros \
+    --whatToPlot heatmap \
+    --plotFile 08_qc/${FACTOR}_spearman_heatmap.pdf \
+    --outFileCorMatrix 08_qc/${FACTOR}_spearman_matrix.txt
+done
+
+# STAT92E: correlate within each experiment separately
+# Do not correlate across experiments A and B
+for EXP in A A2 B
+do
+  multiBamSummary bins \
+    -b 07_blacklist/STAT92E_${EXP}_rep1.clean.bam \
+       07_blacklist/STAT92E_${EXP}_rep2.clean.bam \
+    --labels STAT92E_${EXP}_rep1 STAT92E_${EXP}_rep2 \
+    -o 08_qc/STAT92E_${EXP}.npz \
+    -p 8
+
+  plotCorrelation \
+    -in 08_qc/STAT92E_${EXP}.npz \
+    --corMethod spearman \
+    --skipZeros \
+    --whatToPlot heatmap \
+    --plotFile 08_qc/STAT92E_${EXP}_spearman_heatmap.pdf \
+    --outFileCorMatrix 08_qc/STAT92E_${EXP}_spearman_matrix.txt
+done
+```
+
+---

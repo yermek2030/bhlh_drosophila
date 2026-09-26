@@ -1,0 +1,6 @@
+factor	synonyms	n_features	best_NES	significant	best_feature
+Zld	ZLD|ZELDA	7	2.21	FALSE	cisbp__M5266
+Trl	TRL|GAF|GAGA	35	4.68	TRUE	transfac_pro__M00723
+Opa	OPA|ODD-PAIRED	61	2.3	FALSE	taipale_cyt_meth__ZIC3_NRCCCCCYGCTGYGN_FL
+Grh	GRH|GRAINY|GRHL|AACCGGTT|TFCP2	39	4.5	TRUE	taipale__TFCP2_full_NAACCGGTTN
+CLAMP	CLAMP	12	1	FALSE	SRX159164

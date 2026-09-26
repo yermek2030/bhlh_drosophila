@@ -1,0 +1,3 @@
+"Geneset.Type","Geneset.ID","Description","P.value","FDR","Effect","Odds.Ratio","Status","N.Geneset.Genes","N.Geneset.Peak.Genes","Geneset.Avg.Gene.Length","Geneset.Peak.Genes"
+"Gene Ontology Molecular Function","GO:0003735","structural constituent of ribosome",1.93623392184305e-11,1.25080711351061e-08,1.93362027874291,6.91449739199173,"enriched",170,15,1384.18235294118,"31022, 31897, 34352, 34754, 36688, 38208, 38302, 38983, 39484, 40451, 41343, 42464, 44059, 44150, 251466"
+"Gene Ontology Molecular Function","GO:0016790","thiolester hydrolase activity",0.000127037098113488,0.0410329826906566,2.4265516855608,11.3197805388622,"enriched",20,3,1564.05,"37200, 40299, 43720"

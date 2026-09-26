@@ -1,0 +1,17 @@
+"Heterodimer","Regulatory_Class","n","Percent"
+"Trh/Tgo","Distal enhancer (annotated)",114,18.57
+"Trh/Tgo","Distal peak (non-annotated)",32,5.21
+"Trh/Tgo","Promoter-proximal enhancer (annotated)",55,8.96
+"Trh/Tgo","Promoter-proximal peak (non-annotated)",413,67.26
+"Sim/Tgo","Distal enhancer (annotated)",86,24.23
+"Sim/Tgo","Distal peak (non-annotated)",26,7.32
+"Sim/Tgo","Promoter-proximal enhancer (annotated)",34,9.58
+"Sim/Tgo","Promoter-proximal peak (non-annotated)",209,58.87
+"Dys/Tgo","Distal enhancer (annotated)",220,25.29
+"Dys/Tgo","Distal peak (non-annotated)",80,9.2
+"Dys/Tgo","Promoter-proximal enhancer (annotated)",69,7.93
+"Dys/Tgo","Promoter-proximal peak (non-annotated)",501,57.59
+"Sima/Tgo","Distal enhancer (annotated)",59,19.93
+"Sima/Tgo","Distal peak (non-annotated)",19,6.42
+"Sima/Tgo","Promoter-proximal enhancer (annotated)",32,10.81
+"Sima/Tgo","Promoter-proximal peak (non-annotated)",186,62.84

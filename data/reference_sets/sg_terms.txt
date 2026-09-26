@@ -1,0 +1,13 @@
+adult salivary primordium
+embryonic salivary gland
+embryonic salivary gland body
+embryonic salivary gland common duct
+embryonic salivary gland duct
+salivary common duct primordium
+salivary duct primordium
+salivary gland anlage
+salivary gland body primordium
+salivary gland body specific anlage
+salivary gland duct primordium
+salivary gland duct specific anlage
+salivary gland primordium

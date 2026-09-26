@@ -1,0 +1,5 @@
+"Heterodimer","Comparison","Fisher_OR","p_value"
+"Trh/Tgo","Motif2 in validated enhancer vs non-annotated",3.176,2.47220752258032e-09
+"Sim/Tgo","Motif2 in validated enhancer vs non-annotated",2.464,0.000138048102204355
+"Dys/Tgo","Motif2 in validated enhancer vs non-annotated",2.18,3.14036501553311e-07
+"Sima/Tgo","Motif2 in validated enhancer vs non-annotated",2.513,0.000658891334664786

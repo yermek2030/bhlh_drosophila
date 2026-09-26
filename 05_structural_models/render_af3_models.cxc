@@ -1,0 +1,128 @@
+# =============================================================================
+# render_af3_models.cxc -- ChimeraX render of the four Figure 1.3 panels
+# =============================================================================
+# RUN  (ChimeraX 1.12)
+#   ChimeraX must run WITH ITS GUI: macOS provides no offscreen OpenGL, so
+#   `--nogui` fails at the first `save` with
+#       "Unable to save images because OpenGL rendering is not available".
+#
+#   1. Launch ChimeraX (double-click the application).
+#   2. In the command line at the BOTTOM of the ChimeraX window, type:
+#          open <repository root>/05_structural_models/render_af3_models.cxc
+#      Opening a .cxc EXECUTES it; File > Open on this file does the same.
+#   3. Watch the Log panel on the right. Every command is echoed as it runs;
+#      a red line is a failure. Expect a few seconds: four models, four saves.
+#   4. Four *_aligned.png appear in results/figures/.
+#
+#   Paths are relative: ChimeraX changes the working directory to the folder
+#   containing the .cxc before executing it, so models/ and ../results/ resolve
+#   from 05_structural_models/ wherever the repository is cloned.
+#
+#   The four renders are the panels of Figure 1.3.
+#
+# METHOD
+#   1. COMMON FRAME.  Each model is placed by an explicit 3x4 matrix that
+#      (i) superposes its CME duplex (chains C+D, P atoms) onto the Trh/Tgo
+#      seed456 duplex and (ii) rotates that consensus duplex into a canonical
+#      camera frame: helix axis along screen x, protein centroid towards
+#      screen +y.  Fitted duplex RMSD to the reference: Sim 0.71 A,
+#      Sima 1.02 A, Dys 1.05 A (50 P atoms).
+#   2. COMMON CAMERA AND SCALE.  All four models are opened together, placed,
+#      then ONE `view #1-4` fits their union under an orthographic camera.
+#      Models are shown one at a time, so the four PNGs share one field width
+#      and one pixel scale.  Do not trim or rescale them individually.
+#   3. PALETTE.  Each alpha-subunit takes its dissertation colour from
+#      PAL_HETERO, Tgo the shared PAL_SUBUNIT[["Tgo"]] sand, the duplex
+#      PAL_ARCH[["cme_duplex"]].  Keep in sync with 04_chapter_analyses/helpers/palette.R.
+#      Worst-case CIE76 dE within a panel's {alpha, Tgo, DNA} across
+#      normal/deutan/protan/tritan: 24.0 for all four panels (floor 15).
+#      PAL_ARCH[["cme_duplex"]] is the neutral sage #9BA090: with four
+#      DIFFERENT alpha colours instead of one generic colour, gold collides
+#      with Trh green (worst case 19.6).  Rationale and the measured
+#      alternatives are recorded at the cme_duplex entry in
+#      04_chapter_analyses/helpers/palette.R.
+#   4. pLDDT < 60 hidden, as the Chapter 2 methods state.  AF3 writes pLDDT
+#      into the B-factor column, hence the @@bfactor<60 selector.
+# =============================================================================
+
+close session
+set bgColor white
+camera ortho
+lighting soft
+graphics silhouettes true width 2
+
+# --- models: selected seeds, model_0 = AF3 top-ranked ------------------------
+open models/trh_tgo_seed456_model_0.cif
+open models/sim_tgo_seed999_model_0.cif
+open models/sima_tgo_seed42_model_0.cif
+open models/dysf_tgo_seed777_model_0.cif
+
+# #1 Trh/Tgo seed456   #2 Sim/Tgo seed999   #3 Sima/Tgo seed42   #4 Dys/Tgo seed777
+# chain A = alpha-subunit, chain B = Tgo, chains C+D = 25 bp CME duplex (Art3)
+
+# --- representation ----------------------------------------------------------
+hide #1-4 atoms
+show #1-4 cartoon
+## pLDDT < 60 hidden. AF3 writes PER-ATOM pLDDT into the B-factor column, so the
+## residue-level criterion the Chapter 2 methods state is read off the CA atom.
+## Using a bare @@bfactor<60 (any atom) instead would hide 46-64 EXTRA residues
+## per chain -- e.g. Trh chain A: 109 residues by CA, 166 by any-atom.
+## Restricted to the protein chains; the duplex stays whole (0-12% of its
+## residues fall below 60 and hiding them would break the helix).
+hide #1-4/A,B & @CA & @@bfactor<60 cartoon
+
+# --- colours -----------------------------------------------------------------
+# NO INLINE COMMENTS ANYWHERE BELOW. In a .cxc, '#' is the MODEL-SPEC prefix,
+# not a comment character: `color #1/A #117733  # Trh` parses the trailing text
+# as arguments to `color` and fails with "Expected a collection of one of
+# 'All', 'atoms', 'bonds', ...". ChimeraX aborts the whole script at the
+# first such error, so every `view matrix` and `save` command below is
+# skipped and no PNG is written.
+# Comments must occupy a line of their own.
+#
+# Trh   PAL_HETERO[["Trh/Tgo"]]
+color #1/A #117733
+# Sim   PAL_HETERO[["Sim/Tgo"]]
+color #2/A #E69F00
+# Sima  PAL_HETERO[["Sima/Tgo"]]
+color #3/A #AA3377
+# Dys   PAL_HETERO[["Dys/Tgo"]]
+color #4/A #66CCEE
+# Tgo   PAL_SUBUNIT[["Tgo"]] -- one colour in every panel
+color #1-4/B #DDCC77
+# CME duplex   PAL_ARCH[["cme_duplex"]]
+color #1-4/C,D #9BA090
+
+# --- common frame: 3x4 scene<-model matrices, computed offline. DO NOT EDIT. --
+# Regenerate if the selected seeds or model_0 choice change.
+view matrix models #1,0.146462,0.954961,-0.258066,-20.893145,-0.657975,-0.100757,-0.746269,36.029067,-0.738660,0.279101,0.613583,0.964860
+view matrix models #2,-0.578706,0.402683,0.709186,-18.524073,-0.693741,-0.700236,-0.168502,36.368805,0.428745,-0.589505,0.684589,1.330169
+view matrix models #3,-0.359069,0.846291,0.393523,-23.630236,-0.585426,0.124152,-0.801163,39.262881,-0.726874,-0.518051,0.450862,1.360844
+view matrix models #4,-0.298761,-0.943798,0.141376,-19.617076,0.740249,-0.135688,0.658499,33.589899,-0.602307,0.301388,0.739183,-0.020650
+
+# --- one camera for all four -------------------------------------------------
+view #1-4
+zoom 0.95
+
+# --- save panels, one model visible at a time --------------------------------
+hide #1-4 models
+show #1 models
+save ../results/figures/panel_A_trh_seed456_aligned.png width 1600 supersample 3
+
+hide #1-4 models
+show #2 models
+save ../results/figures/panel_B_sim_seed999_aligned.png width 1600 supersample 3
+
+hide #1-4 models
+show #3 models
+save ../results/figures/panel_C_sima_seed42_aligned.png width 1600 supersample 3
+
+hide #1-4 models
+show #4 models
+save ../results/figures/panel_D_dysf_seed777_aligned.png width 1600 supersample 3
+
+# Leave panel A on screen. To SEE the superposition that the matrices produce
+# (all four duplexes on top of each other), run:  show #1-4 models
+hide #1-4 models
+show #1 models
+# end

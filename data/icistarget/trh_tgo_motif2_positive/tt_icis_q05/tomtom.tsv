@@ -1,0 +1,6 @@
+Query_ID	Target_ID	Optimal_offset	p-value	E-value	q-value	Overlap	Query_consensus	Target_consensus	Orientation
+STRCACTGARARAAA	fantom__motif80_CTCTGAGAGAA	-3	1.44933e-05	0.00282619	0.00565164	11	GTACACTGAGAAAAA	CTCTGAGAGAA	+
+
+# Tomtom (Motif Comparison Tool): Version 5.5.9 compiled on May 27 2026 at 12:34:00
+# The format of this file is described at https://meme-suite.org/meme/doc/tomtom-output-format.html.
+# tomtom -no-ssc -oc data/icistarget/trh_tgo_motif2_positive/tt_icis_q05 -thresh 0.05 -min-overlap 5 -dist pearson data/chapter3/STRCACTGARARAAA.meme data/icistarget/trh_tgo_motif2_positive/icistarget_289.meme

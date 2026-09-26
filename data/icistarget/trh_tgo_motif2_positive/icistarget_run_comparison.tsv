@@ -1,0 +1,17 @@
+quantity	all_614_peaks	motif2_positive_178
+input regions	614	178
+PWMs tested	24453	24453
+significant NES>=3 (all databases)	420	294
+significant PWMs	375	260
+clustered matrices tested by TOMTOM	289	195
+TOMTOM hits at q<=0.05	0	1
+nearest neighbour	stark__RSWGAGMRHRR	fantom__motif80_CTCTGAGAGAA
+nearest E-value	0.119	0.00283
+nearest q-value	0.238	0.00565
+9 bp core hits at q<=0.05	0	0
+Trl best NES	5.50	5.57
+Grh best NES	2.65	5.12
+Zld best NES	0.90	0.31
+Opa best NES	2.46	1.17
+CLAMP best NES	0.32	0.99
+modERN eGFP-trh control NES	1.49	1.73

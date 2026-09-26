@@ -1,0 +1,22 @@
+# outputs
+results/figures/
+results/tables/
+results/reported_values.tsv
+results/checkpoints/
+logs/
+data/motif2_concat_audit/run_log.txt
+# local reference downloads
+reference/*.fa
+reference/*.fai
+reference/*.bed
+reference/rmsk.txt
+reference/liftover/
+reference/motif_databases/
+reference/chipchip_histone_marks/
+# R and system files
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
+.DS_Store
+*.log

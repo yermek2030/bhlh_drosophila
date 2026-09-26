@@ -1,0 +1,3 @@
+Method,Odds_Ratio,P_value,Significant
+ChIP-Enrich (logistic regression, locus-length corrected),1.56304006563153,0.000182319741175648,Yes
+Fisher exact test (count-based, no locus-length correction),1.99497063954842,1.26171449738094e-08,Yes

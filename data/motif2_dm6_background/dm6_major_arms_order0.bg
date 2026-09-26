@@ -1,0 +1,7 @@
+# 0-order Markov frequencies from file dm6_major_arms.fa
+# seqs: 6    min: 1348131    max: 32079331    avg: 22313434.7    sum: 133880608    alph: DNA
+# order 0
+A 2.892e-01
+C 2.108e-01
+G 2.108e-01
+T 2.892e-01
